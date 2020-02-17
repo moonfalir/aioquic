@@ -137,12 +137,12 @@ class QuicCongestionControl:
 
         # TODO : collapse congestion window if persistent congestion
 
-    def on_rtt_measurement(self, latest_rtt: float, now: float) -> None:
-        # check whether we should exit slow start
-        if self.ssthresh is None and self._rtt_monitor.is_rtt_increasing(
-            latest_rtt, now
-        ):
-            self.ssthresh = self.congestion_window
+    #def on_rtt_measurement(self, latest_rtt: float, now: float) -> None:
+    #    # check whether we should exit slow start
+    #    if self.ssthresh is None and self._rtt_monitor.is_rtt_increasing(
+    #        latest_rtt, now
+    #    ):
+    #        self.ssthresh = self.congestion_window
 
 
 class QuicPacketRecovery:
@@ -302,7 +302,7 @@ class QuicPacketRecovery:
                 )
 
             # inform congestion controller
-            self._cc.on_rtt_measurement(latest_rtt, now=now)
+            #self._cc.on_rtt_measurement(latest_rtt, now=now)
             self._pacer.update_rate(
                 congestion_window=self._cc.congestion_window,
                 smoothed_rtt=self._rtt_smoothed,
