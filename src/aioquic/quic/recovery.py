@@ -93,6 +93,7 @@ class QuicCongestionControl:
         self._congestion_stash = 0
         self._rtt_monitor = QuicRttMonitor()
         self.ssthresh: Optional[int] = None
+        print(K_INITIAL_WINDOW)
 
     def on_packet_acked(self, packet: QuicSentPacket) -> None:
         self.bytes_in_flight -= packet.sent_bytes
@@ -154,6 +155,7 @@ class QuicPacketRecovery:
         is_client_without_1rtt: bool,
         send_probe: Callable[[], None],
         quic_logger: Optional[QuicLoggerTrace] = None,
+        custom_cc_constants: dict = {}
     ) -> None:
         self.is_client_without_1rtt = is_client_without_1rtt
         self.max_ack_delay = 0.025
@@ -171,6 +173,20 @@ class QuicPacketRecovery:
         self._rtt_smoothed = 0.0
         self._rtt_variance = 0.0
         self._time_of_last_sent_ack_eliciting_packet = 0.0
+
+        #Use custom congestion constants
+        if "packet_threshold" in custom_cc_constants:
+            global K_PACKET_THRESHOLD
+            K_PACKET_THRESHOLD = custom_cc_constants["packet_threshold"]
+        if "time_threshold" in custom_cc_constants:
+            global K_TIME_THRESHOLD
+            K_TIME_THRESHOLD = custom_cc_constants["time_threshold"]
+        if "initial_window" in custom_cc_constants:
+            global K_INITIAL_WINDOW
+            K_INITIAL_WINDOW = custom_cc_constants["initial_window"]
+        if "loss_reduction_factor" in custom_cc_constants:
+            global K_LOSS_REDUCTION_FACTOR
+            K_LOSS_REDUCTION_FACTOR = custom_cc_constants["loss_reduction_factor"]
 
         # congestion control
         self._cc = QuicCongestionControl()

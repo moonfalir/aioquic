@@ -206,6 +206,7 @@ class QuicConnection:
         original_connection_id: Optional[bytes] = None,
         session_ticket_fetcher: Optional[tls.SessionTicketFetcher] = None,
         session_ticket_handler: Optional[tls.SessionTicketHandler] = None,
+        custom_cc_constants: dict = {}
     ) -> None:
         if configuration.is_client:
             assert (
@@ -284,6 +285,7 @@ class QuicConnection:
         self._streams_blocked_bidi: List[QuicStream] = []
         self._streams_blocked_uni: List[QuicStream] = []
         self._version: Optional[int] = None
+        self._custom_cc_constants = custom_cc_constants
 
         # logging
         if logger_connection_id is None:
@@ -301,6 +303,7 @@ class QuicConnection:
             is_client_without_1rtt=self._is_client,
             quic_logger=self._quic_logger,
             send_probe=self._send_probe,
+            custom_cc_constants=self._custom_cc_constants
         )
 
         # things to send

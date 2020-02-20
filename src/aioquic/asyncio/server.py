@@ -29,6 +29,7 @@ class QuicServer(asyncio.DatagramProtocol):
         session_ticket_handler: Optional[SessionTicketHandler] = None,
         stateless_retry: bool = False,
         stream_handler: Optional[QuicStreamHandler] = None,
+        custom_cc_constants: dict = {}
     ) -> None:
         self._configuration = configuration
         self._create_protocol = create_protocol
@@ -37,6 +38,7 @@ class QuicServer(asyncio.DatagramProtocol):
         self._session_ticket_fetcher = session_ticket_fetcher
         self._session_ticket_handler = session_ticket_handler
         self._transport: Optional[asyncio.DatagramTransport] = None
+        self._custom_cc_constants = custom_cc_constants
 
         self._stream_handler = stream_handler
 
@@ -120,6 +122,7 @@ class QuicServer(asyncio.DatagramProtocol):
                 original_connection_id=original_connection_id,
                 session_ticket_fetcher=self._session_ticket_fetcher,
                 session_ticket_handler=self._session_ticket_handler,
+                custom_cc_constants=self._custom_cc_constants
             )
             protocol = self._create_protocol(
                 connection, stream_handler=self._stream_handler
@@ -168,6 +171,7 @@ async def serve(
     session_ticket_handler: Optional[SessionTicketHandler] = None,
     stateless_retry: bool = False,
     stream_handler: QuicStreamHandler = None,
+    custom_cc_constants: dict = {}
 ) -> QuicServer:
     """
     Start a QUIC server at the given `host` and `port`.
@@ -204,6 +208,7 @@ async def serve(
             session_ticket_handler=session_ticket_handler,
             stateless_retry=stateless_retry,
             stream_handler=stream_handler,
+            custom_cc_constants=custom_cc_constants
         ),
         local_addr=(host, port),
     )

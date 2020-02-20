@@ -426,6 +426,27 @@ if __name__ == "__main__":
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="increase logging verbosity"
     )
+
+    parser.add_argument(
+        "--pkt-thresh",
+        type=int,
+        help="QUIC Recovery packet reodering threshold",
+    )
+    parser.add_argument(
+        "--time-thresh",
+        type=float,
+        help="QUIC Recovery time reodering threshold",
+    )
+    parser.add_argument(
+        "--ini-cwnd",
+        type=int,
+        help="QUIC Congestion initial window",
+    )
+    parser.add_argument(
+        "--loss-reduce",
+        type=float,
+        help="QUIC Congestion loss reduction factor",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -449,6 +470,17 @@ if __name__ == "__main__":
         secrets_log_file = open(args.secrets_log, "a")
     else:
         secrets_log_file = None
+
+    # custom congestion/recovery constants
+    custom_cc_constants: dict = {}
+    if args.pkt_thresh:
+        custom_cc_constants["packet_threshold"] = args.pkt_thresh
+    if args.time_thresh:
+        custom_cc_constants["time_threshold"] = args.time_thresh
+    if args.ini_cwnd:
+        custom_cc_constants["initial_window"] = args.ini_cwnd
+    if args.loss_reduce:
+        custom_cc_constants["loss_reduction_factor"] = args.loss_reduce
 
     configuration = QuicConfiguration(
         alpn_protocols=H3_ALPN + H0_ALPN + ["siduck"],
@@ -475,6 +507,7 @@ if __name__ == "__main__":
             session_ticket_fetcher=ticket_store.pop,
             session_ticket_handler=ticket_store.add,
             stateless_retry=args.stateless_retry,
+            custom_cc_constants=custom_cc_constants
         )
     )
     try:
