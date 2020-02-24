@@ -4,7 +4,7 @@ import os
 from collections import deque
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Deque, Dict, FrozenSet, List, Optional, Sequence, Tuple, cast
+from typing import Any, Deque, Dict, FrozenSet, List, Optional, Sequence, Tuple
 
 from .. import tls
 from ..buffer import UINT_VAR_MAX, Buffer, BufferReadError, size_uint_var
@@ -629,7 +629,6 @@ class QuicConnection:
         if self._state in END_STATES:
             return
 
-        data = cast(bytes, data)
         if self._quic_logger is not None:
             self._quic_logger.log_event(
                 category="transport",
@@ -1974,7 +1973,9 @@ class QuicConnection:
     def _parse_transport_parameters(
         self, data: bytes, from_session_ticket: bool = False
     ) -> None:
-        quic_transport_parameters = pull_quic_transport_parameters(Buffer(data=data))
+        quic_transport_parameters = pull_quic_transport_parameters(
+            Buffer(data=data), protocol_version=self._version
+        )
 
         # log event
         if self._quic_logger is not None and not from_session_ticket:
@@ -2060,7 +2061,9 @@ class QuicConnection:
             )
 
         buf = Buffer(capacity=3 * PACKET_MAX_SIZE)
-        push_quic_transport_parameters(buf, quic_transport_parameters)
+        push_quic_transport_parameters(
+            buf, quic_transport_parameters, protocol_version=self._version
+        )
         return buf.data
 
     def _set_state(self, state: QuicConnectionState) -> None:
