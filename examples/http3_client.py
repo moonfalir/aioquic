@@ -337,6 +337,7 @@ async def run(
                 for url in urls
             ]
             await asyncio.gather(*coros)
+            client.close()
 
 
 if __name__ == "__main__":

@@ -93,7 +93,6 @@ class QuicCongestionControl:
         self._congestion_stash = 0
         self._rtt_monitor = QuicRttMonitor()
         self.ssthresh: Optional[int] = None
-        print(K_INITIAL_WINDOW)
 
     def on_packet_acked(self, packet: QuicSentPacket) -> None:
         self.bytes_in_flight -= packet.sent_bytes
