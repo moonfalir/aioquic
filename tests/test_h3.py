@@ -20,6 +20,13 @@ from aioquic.quic.logger import QuicLogger
 from .test_connection import client_and_server, transfer
 
 
+def h3_client_and_server():
+    return client_and_server(
+        client_options={"alpn_protocols": H3_ALPN},
+        server_options={"alpn_protocols": H3_ALPN},
+    )
+
+
 def h3_transfer(quic_sender, h3_receiver):
     quic_receiver = h3_receiver._quic
     if hasattr(quic_sender, "stream_queue"):
@@ -486,10 +493,7 @@ class H3ConnectionTest(TestCase):
         )
 
     def test_request(self):
-        with client_and_server(
-            client_options={"alpn_protocols": H3_ALPN},
-            server_options={"alpn_protocols": H3_ALPN},
-        ) as (quic_client, quic_server):
+        with h3_client_and_server() as (quic_client, quic_server):
             h3_client = H3Connection(quic_client)
             h3_server = H3Connection(quic_server)
 
@@ -503,10 +507,7 @@ class H3ConnectionTest(TestCase):
             self._make_request(h3_client, h3_server)
 
     def test_request_headers_only(self):
-        with client_and_server(
-            client_options={"alpn_protocols": H3_ALPN},
-            server_options={"alpn_protocols": H3_ALPN},
-        ) as (quic_client, quic_server):
+        with h3_client_and_server() as (quic_client, quic_server):
             h3_client = H3Connection(quic_client)
             h3_server = H3Connection(quic_server)
 
@@ -695,10 +696,7 @@ class H3ConnectionTest(TestCase):
         )
 
     def test_request_with_server_push(self):
-        with client_and_server(
-            client_options={"alpn_protocols": H3_ALPN},
-            server_options={"alpn_protocols": H3_ALPN},
-        ) as (quic_client, quic_server):
+        with h3_client_and_server() as (quic_client, quic_server):
             h3_client = H3Connection(quic_client)
             h3_server = H3Connection(quic_server)
 
@@ -865,10 +863,7 @@ class H3ConnectionTest(TestCase):
             )
 
     def test_request_with_server_push_max_push_id(self):
-        with client_and_server(
-            client_options={"alpn_protocols": H3_ALPN},
-            server_options={"alpn_protocols": H3_ALPN},
-        ) as (quic_client, quic_server):
+        with h3_client_and_server() as (quic_client, quic_server):
             h3_client = H3Connection(quic_client)
             h3_server = H3Connection(quic_server)
 
@@ -1163,10 +1158,7 @@ class H3ConnectionTest(TestCase):
         )
 
     def test_uni_stream_grease(self):
-        with client_and_server(
-            client_options={"alpn_protocols": H3_ALPN},
-            server_options={"alpn_protocols": H3_ALPN},
-        ) as (quic_client, quic_server):
+        with h3_client_and_server() as (quic_client, quic_server):
             h3_server = H3Connection(quic_server)
 
             quic_client.send_stream_data(
@@ -1175,10 +1167,7 @@ class H3ConnectionTest(TestCase):
             self.assertEqual(h3_transfer(quic_client, h3_server), [])
 
     def test_request_with_trailers(self):
-        with client_and_server(
-            client_options={"alpn_protocols": H3_ALPN},
-            server_options={"alpn_protocols": H3_ALPN},
-        ) as (quic_client, quic_server):
+        with h3_client_and_server() as (quic_client, quic_server):
             h3_client = H3Connection(quic_client)
             h3_server = H3Connection(quic_server)
 
@@ -1270,10 +1259,7 @@ class H3ConnectionTest(TestCase):
             )
 
     def test_uni_stream_type(self):
-        with client_and_server(
-            client_options={"alpn_protocols": H3_ALPN},
-            server_options={"alpn_protocols": H3_ALPN},
-        ) as (quic_client, quic_server):
+        with h3_client_and_server() as (quic_client, quic_server):
             h3_server = H3Connection(quic_server)
 
             # unknown stream type 9

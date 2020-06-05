@@ -6,6 +6,13 @@ from aioquic.h3.events import DataReceived, HeadersReceived
 from .test_connection import client_and_server, transfer
 
 
+def h0_client_and_server():
+    return client_and_server(
+        client_options={"alpn_protocols": H0_ALPN},
+        server_options={"alpn_protocols": H0_ALPN},
+    )
+
+
 def h0_transfer(quic_sender, h0_receiver):
     quic_receiver = h0_receiver._quic
     transfer(quic_sender, quic_receiver)
@@ -21,10 +28,7 @@ def h0_transfer(quic_sender, h0_receiver):
 
 class H0ConnectionTest(TestCase):
     def test_connect(self):
-        with client_and_server(
-            client_options={"alpn_protocols": H0_ALPN},
-            server_options={"alpn_protocols": H0_ALPN},
-        ) as (quic_client, quic_server):
+        with h0_client_and_server() as (quic_client, quic_server):
             h0_client = H0Connection(quic_client)
             h0_server = H0Connection(quic_server)
 
@@ -86,10 +90,7 @@ class H0ConnectionTest(TestCase):
             self.assertEqual(events[1].stream_ended, True)
 
     def test_headers_only(self):
-        with client_and_server(
-            client_options={"alpn_protocols": H0_ALPN},
-            server_options={"alpn_protocols": H0_ALPN},
-        ) as (quic_client, quic_server):
+        with h0_client_and_server() as (quic_client, quic_server):
             h0_client = H0Connection(quic_client)
             h0_server = H0Connection(quic_server)
 

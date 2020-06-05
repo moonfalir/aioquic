@@ -1,7 +1,7 @@
 aioquic
 =======
 
-|rtd| |pypi-v| |pypi-pyversions| |pypi-l| |travis| |codecov| |black|
+|rtd| |pypi-v| |pypi-pyversions| |pypi-l| |tests| |codecov| |black|
 
 .. |rtd| image:: https://readthedocs.org/projects/aioquic/badge/?version=latest
     :target: https://aioquic.readthedocs.io/
@@ -15,8 +15,8 @@ aioquic
 .. |pypi-l| image:: https://img.shields.io/pypi/l/aioquic.svg
     :target: https://pypi.python.org/pypi/aioquic
 
-.. |travis| image:: https://img.shields.io/travis/com/aiortc/aioquic.svg
-    :target: https://travis-ci.com/aiortc/aioquic
+.. |tests| image:: https://github.com/aiortc/aioquic/workflows/tests/badge.svg
+    :target: https://github.com/aiortc/aioquic/actions
 
 .. |codecov| image:: https://img.shields.io/codecov/c/github/aiortc/aioquic.svg
     :target: https://codecov.io/gh/aiortc/aioquic
@@ -51,8 +51,8 @@ different concurrency models.
 Features
 --------
 
-- QUIC stack conforming with draft-23
-- HTTP/3 stack conforming with draft-23
+- QUIC stack conforming with draft-28
+- HTTP/3 stack conforming with draft-28
 - minimal TLS 1.3 implementation
 - IPv4 and IPv6 support
 - connection migration and NAT rebinding
@@ -60,10 +60,15 @@ Features
 - logging QUIC events in QLOG format
 - HTTP/3 server push support
 
-Running the examples
---------------------
+Requirements
+------------
 
 ``aioquic`` requires Python 3.6 or better, and the OpenSSL development headers.
+
+Linux
+.....
+
+On Debian/Ubuntu run:
 
 .. code-block:: console
 
@@ -75,42 +80,44 @@ On Alpine Linux you will also need the following:
 
    $ sudo apt install bsd-compat-headers libffi-dev
 
-After checking out the code using git you can run:
+OS X
+....
+
+On OS X run:
 
 .. code-block:: console
 
-   $ pip install -e .
-   $ pip install aiofiles asgiref httpbin starlette wsproto
+   $ brew install openssl
 
-HTTP/3 server
-.............
-
-You can run the example server, which handles both HTTP/0.9 and HTTP/3:
+You will need to set some environment variables to link against OpenSSL:
 
 .. code-block:: console
 
-   $ python examples/http3_server.py --certificate tests/ssl_cert.pem --private-key tests/ssl_key.pem
+   $ export CFLAGS=-I/usr/local/opt/openssl/include
+   $ export LDFLAGS=-L/usr/local/opt/openssl/lib
 
-HTTP/3 client
-.............
+Windows
+.......
 
-You can run the example client to perform an HTTP/3 request:
-
-.. code-block:: console
-
-  $ python examples/http3_client.py --ca-certs tests/pycacert.pem https://localhost:4433/
-
-Alternatively you can perform an HTTP/0.9 request:
+On Windows the easiest way to install OpenSSL is to use `Chocolatey`_.
 
 .. code-block:: console
 
-  $ python examples/http3_client.py --ca-certs tests/pycacert.pem --legacy-http https://localhost:4433/
+   > choco install openssl
 
-You can also open a WebSocket over HTTP/3:
+You will need to set some environment variables to link against OpenSSL:
 
 .. code-block:: console
 
-  $ python examples/http3_client.py --ca-certs tests/pycacert.pem wss://localhost:4433/ws
+  > $Env:CL = "/IC:\Progra~1\OpenSSL-Win64\include"
+  > $Env:LINK = "/LIBPATH:C:\Progra~1\OpenSSL-Win64\lib"
+
+Running the examples
+--------------------
+
+`aioquic` comes with a number of examples illustrating various QUIC usecases.
+
+You can browse these examples here: https://github.com/aiortc/aioquic/tree/master/examples
 
 License
 -------
@@ -120,4 +127,5 @@ License
 .. _read the documentation: https://aioquic.readthedocs.io/en/latest/
 .. _QUIC implementations: https://github.com/quicwg/base-drafts/wiki/Implementations
 .. _cryptography: https://cryptography.io/
+.. _Chocolatey: https://chocolatey.org/
 .. _BSD license: https://aioquic.readthedocs.io/en/latest/license.html

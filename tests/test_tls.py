@@ -120,12 +120,15 @@ class ContextTest(TestCase):
         self.assertEqual(client.state, State.CLIENT_HANDSHAKE_START)
         return client
 
-    def create_server(self, alpn_protocols=None):
+    def create_server(self, alpn_protocols=None, **kwargs):
         configuration = QuicConfiguration(is_client=False)
         configuration.load_cert_chain(SERVER_CERTFILE, SERVER_KEYFILE)
 
         server = Context(
-            alpn_protocols=alpn_protocols, is_client=False, max_early_data=0xFFFFFFFF
+            alpn_protocols=alpn_protocols,
+            is_client=False,
+            max_early_data=0xFFFFFFFF,
+            **kwargs
         )
         server.certificate = configuration.certificate
         server.certificate_private_key = configuration.private_key
@@ -245,11 +248,9 @@ class ContextTest(TestCase):
         server.handle_message(server_input, server_buf)
 
     def test_server_unsupported_cipher_suite(self):
-        client = self.create_client()
-        client._cipher_suites = [tls.CipherSuite.AES_128_GCM_SHA256]
+        client = self.create_client(cipher_suites=[tls.CipherSuite.AES_128_GCM_SHA256])
 
-        server = self.create_server()
-        server._cipher_suites = [tls.CipherSuite.AES_256_GCM_SHA384]
+        server = self.create_server(cipher_suites=[tls.CipherSuite.AES_256_GCM_SHA384])
 
         with self.assertRaises(tls.AlertHandshakeFailure) as cm:
             self._server_fail_hello(client, server)
@@ -314,7 +315,7 @@ class ContextTest(TestCase):
         client.handle_message(b"", client_buf)
         self.assertEqual(client.state, State.CLIENT_EXPECT_SERVER_HELLO)
         server_input = merge_buffers(client_buf)
-        self.assertGreaterEqual(len(server_input), 213)
+        self.assertGreaterEqual(len(server_input), 181)
         self.assertLessEqual(len(server_input), 358)
         reset_buffers(client_buf)
 
@@ -507,7 +508,7 @@ class ContextTest(TestCase):
             server.handle_message(server_input, server_buf)
             self.assertEqual(server.state, State.SERVER_EXPECT_FINISHED)
             client_input = merge_buffers(server_buf)
-            self.assertEqual(len(client_input), 307)
+            self.assertEqual(len(client_input), 275)
             reset_buffers(server_buf)
 
             # handle server hello, encrypted extensions, certificate, certificate verify, finished
@@ -587,7 +588,7 @@ class ContextTest(TestCase):
             buf.seek(buf.tell() - 1)
             buf.push_uint8(1)
             client_input = merge_buffers(server_buf)
-            self.assertEqual(len(client_input), 307)
+            self.assertEqual(len(client_input), 275)
             reset_buffers(server_buf)
 
             # handle server hello and bomb
@@ -613,7 +614,7 @@ class TlsTest(TestCase):
             ),
         )
         self.assertEqual(
-            hello.session_id,
+            hello.legacy_session_id,
             binascii.unhexlify(
                 "9aee82a2d186c1cb32a329d9dcfe004a1a438ad0485a53c6bfcf55c132a23235"
             ),
@@ -626,7 +627,7 @@ class TlsTest(TestCase):
                 tls.CipherSuite.CHACHA20_POLY1305_SHA256,
             ],
         )
-        self.assertEqual(hello.compression_methods, [tls.CompressionMethod.NULL])
+        self.assertEqual(hello.legacy_compression_methods, [tls.CompressionMethod.NULL])
 
         # extensions
         self.assertEqual(hello.alpn_protocols, None)
@@ -688,7 +689,7 @@ class TlsTest(TestCase):
                 "ed575c6fbd599c4dfaabd003dca6e860ccdb0e1782c1af02e57bf27cb6479b76"
             ),
         )
-        self.assertEqual(hello.session_id, b"")
+        self.assertEqual(hello.legacy_session_id, b"")
         self.assertEqual(
             hello.cipher_suites,
             [
@@ -698,7 +699,7 @@ class TlsTest(TestCase):
                 tls.CipherSuite.EMPTY_RENEGOTIATION_INFO_SCSV,
             ],
         )
-        self.assertEqual(hello.compression_methods, [tls.CompressionMethod.NULL])
+        self.assertEqual(hello.legacy_compression_methods, [tls.CompressionMethod.NULL])
 
         # extensions
         self.assertEqual(hello.alpn_protocols, ["h3-19"])
@@ -802,7 +803,7 @@ class TlsTest(TestCase):
             ),
         )
         self.assertEqual(
-            hello.session_id,
+            hello.legacy_session_id,
             binascii.unhexlify(
                 "26b19bdd30dbf751015a3a16e13bd59002dfe420b799d2a5cd5e11b8fa7bcb66"
             ),
@@ -815,7 +816,7 @@ class TlsTest(TestCase):
                 tls.CipherSuite.CHACHA20_POLY1305_SHA256,
             ],
         )
-        self.assertEqual(hello.compression_methods, [tls.CompressionMethod.NULL])
+        self.assertEqual(hello.legacy_compression_methods, [tls.CompressionMethod.NULL])
 
         # extensions
         self.assertEqual(hello.alpn_protocols, None)
@@ -876,7 +877,7 @@ class TlsTest(TestCase):
             random=binascii.unhexlify(
                 "18b2b23bf3e44b5d52ccfe7aecbc5ff14eadc3d349fabf804d71f165ae76e7d5"
             ),
-            session_id=binascii.unhexlify(
+            legacy_session_id=binascii.unhexlify(
                 "9aee82a2d186c1cb32a329d9dcfe004a1a438ad0485a53c6bfcf55c132a23235"
             ),
             cipher_suites=[
@@ -884,7 +885,7 @@ class TlsTest(TestCase):
                 tls.CipherSuite.AES_128_GCM_SHA256,
                 tls.CipherSuite.CHACHA20_POLY1305_SHA256,
             ],
-            compression_methods=[tls.CompressionMethod.NULL],
+            legacy_compression_methods=[tls.CompressionMethod.NULL],
             key_share=[
                 (
                     tls.Group.SECP256R1,
@@ -933,7 +934,7 @@ class TlsTest(TestCase):
             ),
         )
         self.assertEqual(
-            hello.session_id,
+            hello.legacy_session_id,
             binascii.unhexlify(
                 "9aee82a2d186c1cb32a329d9dcfe004a1a438ad0485a53c6bfcf55c132a23235"
             ),
@@ -966,7 +967,7 @@ class TlsTest(TestCase):
             ),
         )
         self.assertEqual(
-            hello.session_id,
+            hello.legacy_session_id,
             binascii.unhexlify(
                 "9483e7e895d0f4cec17086b0849601c0632662cd764e828f2f892f4c4b7771b0"
             ),
@@ -1003,7 +1004,7 @@ class TlsTest(TestCase):
                 random=binascii.unhexlify(
                     "ada85271d19680c615ea7336519e3fdf6f1e26f3b1075ee1de96ffa8884e8280"
                 ),
-                session_id=binascii.unhexlify(
+                legacy_session_id=binascii.unhexlify(
                     "9aee82a2d186c1cb32a329d9dcfe004a1a438ad0485a53c6bfcf55c132a23235"
                 ),
                 cipher_suite=tls.CipherSuite.AES_256_GCM_SHA384,
@@ -1031,7 +1032,7 @@ class TlsTest(TestCase):
             random=binascii.unhexlify(
                 "ada85271d19680c615ea7336519e3fdf6f1e26f3b1075ee1de96ffa8884e8280"
             ),
-            session_id=binascii.unhexlify(
+            legacy_session_id=binascii.unhexlify(
                 "9aee82a2d186c1cb32a329d9dcfe004a1a438ad0485a53c6bfcf55c132a23235"
             ),
             cipher_suite=tls.CipherSuite.AES_256_GCM_SHA384,
@@ -1293,7 +1294,7 @@ class VerifyCertificateTest(TestCase):
                 certificate=certificate,
                 server_name="localhost",
             )
-        self.assertEqual(str(cm.exception), "OpenSSL call failed")
+        self.assertEqual(str(cm.exception), "OpenSSL call to X509_store_new failed")
 
     def test_verify_dates(self):
         certificate, _ = generate_ec_certificate(

@@ -2,7 +2,12 @@ from dataclasses import dataclass, field
 from os import PathLike
 from typing import Any, List, Optional, TextIO, Union
 
-from ..tls import SessionTicket, load_pem_private_key, load_pem_x509_certificates
+from ..tls import (
+    CipherSuite,
+    SessionTicket,
+    load_pem_private_key,
+    load_pem_x509_certificates,
+)
 from .logger import QuicLogger
 from .packet import QuicProtocolVersion
 
@@ -74,15 +79,12 @@ class QuicConfiguration:
     capath: Optional[str] = None
     certificate: Any = None
     certificate_chain: List[Any] = field(default_factory=list)
+    cipher_suites: Optional[List[CipherSuite]] = None
     max_datagram_frame_size: Optional[int] = None
     private_key: Any = None
     quantum_readiness_test: bool = False
     supported_versions: List[int] = field(
-        default_factory=lambda: [
-            QuicProtocolVersion.DRAFT_27,
-            QuicProtocolVersion.DRAFT_26,
-            QuicProtocolVersion.DRAFT_25,
-        ]
+        default_factory=lambda: [QuicProtocolVersion.DRAFT_28]
     )
     verify_mode: Optional[int] = None
 

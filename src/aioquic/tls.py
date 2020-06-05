@@ -20,6 +20,7 @@ from typing import (
     Union,
 )
 
+import certifi
 from cryptography import x509
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.backends import default_backend
@@ -208,10 +209,10 @@ def load_pem_x509_certificates(data: bytes) -> List[x509.Certificate]:
     return certificates
 
 
-def openssl_assert(ok: bool) -> None:
+def openssl_assert(ok: bool, func: str) -> None:
     if not ok:
         lib.ERR_clear_error()
-        raise AlertInternalError("OpenSSL call failed")
+        raise AlertInternalError("OpenSSL call to %s failed" % func)
 
 
 def openssl_decode_string(charp) -> str:
@@ -269,43 +270,52 @@ def verify_certificate(
 
     # verify certificate chain
     store = lib.X509_STORE_new()
-    openssl_assert(store != ffi.NULL)
+    openssl_assert(store != ffi.NULL, "X509_store_new")
     store = ffi.gc(store, lib.X509_STORE_free)
 
     # load default CAs
-    openssl_assert(lib.X509_STORE_set_default_paths(store))
-    paths = ssl.get_default_verify_paths()
+    openssl_assert(
+        lib.X509_STORE_set_default_paths(store), "X509_STORE_set_default_paths"
+    )
     openssl_assert(
         lib.X509_STORE_load_locations(
-            store, openssl_encode_path(paths.cafile), openssl_encode_path(paths.capath)
-        )
+            store, openssl_encode_path(certifi.where()), openssl_encode_path(None),
+        ),
+        "X509_STORE_load_locations",
     )
 
     # load extra CAs
     if cadata is not None:
         for cert in load_pem_x509_certificates(cadata):
-            openssl_assert(lib.X509_STORE_add_cert(store, cert_x509_ptr(cert)))
+            openssl_assert(
+                lib.X509_STORE_add_cert(store, cert_x509_ptr(cert)),
+                "X509_STORE_add_cert",
+            )
 
     if cafile is not None or capath is not None:
         openssl_assert(
             lib.X509_STORE_load_locations(
                 store, openssl_encode_path(cafile), openssl_encode_path(capath)
-            )
+            ),
+            "X509_STORE_load_locations",
         )
 
     chain_stack = lib.sk_X509_new_null()
-    openssl_assert(chain_stack != ffi.NULL)
+    openssl_assert(chain_stack != ffi.NULL, "sk_X509_new_null")
     chain_stack = ffi.gc(chain_stack, lib.sk_X509_free)
     for cert in chain:
-        openssl_assert(lib.sk_X509_push(chain_stack, cert_x509_ptr(cert)))
+        openssl_assert(
+            lib.sk_X509_push(chain_stack, cert_x509_ptr(cert)), "sk_X509_push"
+        )
 
     store_ctx = lib.X509_STORE_CTX_new()
-    openssl_assert(store_ctx != ffi.NULL)
+    openssl_assert(store_ctx != ffi.NULL, "X509_STORE_CTX_new")
     store_ctx = ffi.gc(store_ctx, lib.X509_STORE_CTX_free)
     openssl_assert(
         lib.X509_STORE_CTX_init(
             store_ctx, store, cert_x509_ptr(certificate), chain_stack
-        )
+        ),
+        "X509_STORE_CTX_init",
     )
 
     res = lib.X509_verify_cert(store_ctx)
@@ -540,9 +550,9 @@ class OfferedPsks:
 @dataclass
 class ClientHello:
     random: bytes
-    session_id: bytes
+    legacy_session_id: bytes
     cipher_suites: List[int]
-    compression_methods: List[int]
+    legacy_compression_methods: List[int]
 
     # extensions
     alpn_protocols: Optional[List[str]] = None
@@ -562,13 +572,12 @@ def pull_client_hello(buf: Buffer) -> ClientHello:
     assert buf.pull_uint8() == HandshakeType.CLIENT_HELLO
     with pull_block(buf, 3):
         assert buf.pull_uint16() == TLS_VERSION_1_2
-        client_random = buf.pull_bytes(32)
 
         hello = ClientHello(
-            random=client_random,
-            session_id=pull_opaque(buf, 1),
+            random=buf.pull_bytes(32),
+            legacy_session_id=pull_opaque(buf, 1),
             cipher_suites=pull_list(buf, 2, buf.pull_uint16),
-            compression_methods=pull_list(buf, 1, buf.pull_uint8),
+            legacy_compression_methods=pull_list(buf, 1, buf.pull_uint8),
         )
 
         # extensions
@@ -622,9 +631,9 @@ def push_client_hello(buf: Buffer, hello: ClientHello) -> None:
     with push_block(buf, 3):
         buf.push_uint16(TLS_VERSION_1_2)
         buf.push_bytes(hello.random)
-        push_opaque(buf, 1, hello.session_id)
+        push_opaque(buf, 1, hello.legacy_session_id)
         push_list(buf, 2, buf.push_uint16, hello.cipher_suites)
-        push_list(buf, 1, buf.push_uint8, hello.compression_methods)
+        push_list(buf, 1, buf.push_uint8, hello.legacy_compression_methods)
 
         # extensions
         with push_block(buf, 2):
@@ -684,7 +693,7 @@ def push_client_hello(buf: Buffer, hello: ClientHello) -> None:
 @dataclass
 class ServerHello:
     random: bytes
-    session_id: bytes
+    legacy_session_id: bytes
     cipher_suite: int
     compression_method: int
 
@@ -699,11 +708,10 @@ def pull_server_hello(buf: Buffer) -> ServerHello:
     assert buf.pull_uint8() == HandshakeType.SERVER_HELLO
     with pull_block(buf, 3):
         assert buf.pull_uint16() == TLS_VERSION_1_2
-        server_random = buf.pull_bytes(32)
 
         hello = ServerHello(
-            random=server_random,
-            session_id=pull_opaque(buf, 1),
+            random=buf.pull_bytes(32),
+            legacy_session_id=pull_opaque(buf, 1),
             cipher_suite=buf.pull_uint16(),
             compression_method=buf.pull_uint8(),
         )
@@ -734,7 +742,7 @@ def push_server_hello(buf: Buffer, hello: ServerHello) -> None:
         buf.push_uint16(TLS_VERSION_1_2)
         buf.push_bytes(hello.random)
 
-        push_opaque(buf, 1, hello.session_id)
+        push_opaque(buf, 1, hello.legacy_session_id)
         buf.push_uint16(hello.cipher_suite)
         buf.push_uint8(hello.compression_method)
 
@@ -1151,7 +1159,7 @@ class SessionTicket:
 
     @property
     def obfuscated_age(self) -> int:
-        age = int((utcnow() - self.not_valid_before).total_seconds())
+        age = int((utcnow() - self.not_valid_before).total_seconds() * 1000)
         return (age + self.age_add) % (1 << 32)
 
 
@@ -1168,6 +1176,7 @@ class Context:
         cadata: Optional[bytes] = None,
         cafile: Optional[str] = None,
         capath: Optional[str] = None,
+        cipher_suites: Optional[List[CipherSuite]] = None,
         logger: Optional[Union[logging.Logger, logging.LoggerAdapter]] = None,
         max_early_data: Optional[int] = None,
         server_name: Optional[str] = None,
@@ -1201,12 +1210,15 @@ class Context:
         ] = lambda d, e, c, s: None
 
         # supported parameters
-        self._cipher_suites = [
-            CipherSuite.AES_256_GCM_SHA384,
-            CipherSuite.AES_128_GCM_SHA256,
-            CipherSuite.CHACHA20_POLY1305_SHA256,
-        ]
-        self._compression_methods: List[int] = [CompressionMethod.NULL]
+        if cipher_suites is not None:
+            self._cipher_suites = cipher_suites
+        else:
+            self._cipher_suites = [
+                CipherSuite.AES_256_GCM_SHA384,
+                CipherSuite.AES_128_GCM_SHA256,
+                CipherSuite.CHACHA20_POLY1305_SHA256,
+            ]
+        self._legacy_compression_methods: List[int] = [CompressionMethod.NULL]
         self._psk_key_exchange_modes: List[int] = [PskKeyExchangeMode.PSK_DHE_KE]
         self._signature_algorithms: List[int] = [
             SignatureAlgorithm.RSA_PSS_RSAE_SHA256,
@@ -1243,11 +1255,11 @@ class Context:
 
         if is_client:
             self.client_random = os.urandom(32)
-            self.session_id = os.urandom(32)
+            self.legacy_session_id = b""
             self.state = State.CLIENT_HANDSHAKE_START
         else:
             self.client_random = None
-            self.session_id = None
+            self.legacy_session_id = None
             self.state = State.SERVER_EXPECT_CLIENT_HELLO
 
     @property
@@ -1392,9 +1404,9 @@ class Context:
 
         hello = ClientHello(
             random=self.client_random,
-            session_id=self.session_id,
+            legacy_session_id=self.legacy_session_id,
             cipher_suites=[int(x) for x in self._cipher_suites],
-            compression_methods=self._compression_methods,
+            legacy_compression_methods=self._legacy_compression_methods,
             alpn_protocols=self._alpn_protocols,
             key_share=key_share,
             psk_key_exchange_modes=self._psk_key_exchange_modes
@@ -1463,7 +1475,7 @@ class Context:
             [peer_hello.cipher_suite],
             AlertHandshakeFailure("Unsupported cipher suite"),
         )
-        assert peer_hello.compression_method in self._compression_methods
+        assert peer_hello.compression_method in self._legacy_compression_methods
         assert peer_hello.supported_version in self._supported_versions
 
         # select key schedule
@@ -1655,8 +1667,8 @@ class Context:
             AlertHandshakeFailure("No supported cipher suite"),
         )
         compression_method = negotiate(
-            self._compression_methods,
-            peer_hello.compression_methods,
+            self._legacy_compression_methods,
+            peer_hello.legacy_compression_methods,
             AlertHandshakeFailure("No supported compression method"),
         )
         psk_key_exchange_mode = negotiate(
@@ -1685,7 +1697,7 @@ class Context:
 
         self.client_random = peer_hello.random
         self.server_random = os.urandom(32)
-        self.session_id = peer_hello.session_id
+        self.legacy_session_id = peer_hello.legacy_session_id
         self.received_extensions = peer_hello.other_extensions
 
         # select key schedule
@@ -1777,7 +1789,7 @@ class Context:
         # send hello
         hello = ServerHello(
             random=self.server_random,
-            session_id=self.session_id,
+            legacy_session_id=self.legacy_session_id,
             cipher_suite=cipher_suite,
             compression_method=compression_method,
             key_share=encode_public_key(public_key),

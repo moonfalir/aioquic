@@ -1,6 +1,7 @@
 import asyncio
 import ipaddress
 import socket
+import sys
 from typing import AsyncGenerator, Callable, Optional, cast
 
 from ..quic.configuration import QuicConfiguration
@@ -22,6 +23,7 @@ async def connect(
     session_ticket_handler: Optional[SessionTicketHandler] = None,
     stream_handler: Optional[QuicStreamHandler] = None,
     wait_connected: bool = True,
+    local_port: int = 0,
 ) -> AsyncGenerator[QuicConnectionProtocol, None]:
     """
     Connect to a QUIC server at the given `host` and `port`.
@@ -43,8 +45,10 @@ async def connect(
     * ``stream_handler`` is a callback which is invoked whenever a stream is
       created. It must accept two arguments: a :class:`asyncio.StreamReader`
       and a :class:`asyncio.StreamWriter`.
+    * ``local_port`` is the UDP port number that this client wants to bind.
     """
     loop = asyncio.get_event_loop()
+    local_host = "::"
 
     # if host is not an IP address, pass it to enable SNI
     try:
@@ -57,7 +61,13 @@ async def connect(
     infos = await loop.getaddrinfo(host, port, type=socket.SOCK_DGRAM)
     addr = infos[0][4]
     if len(addr) == 2:
-        addr = ("::ffff:" + addr[0], addr[1], 0, 0)
+        # determine behaviour for IPv4
+        if sys.platform == "win32":
+            # on Windows, we must use an IPv4 socket to reach an IPv4 host
+            local_host = "0.0.0.0"
+        else:
+            # other platforms support dual-stack sockets
+            addr = ("::ffff:" + addr[0], addr[1], 0, 0)
 
     # prepare QUIC connection
     if configuration is None:
@@ -71,7 +81,7 @@ async def connect(
     # connect
     _, protocol = await loop.create_datagram_endpoint(
         lambda: create_protocol(connection, stream_handler=stream_handler),
-        local_addr=("::", 0),
+        local_addr=(local_host, local_port),
     )
     protocol = cast(QuicConnectionProtocol, protocol)
     protocol.connect(addr)

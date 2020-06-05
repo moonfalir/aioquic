@@ -1,5 +1,4 @@
 import binascii
-import os
 from unittest import TestCase, skipIf
 
 from aioquic.buffer import Buffer
@@ -12,7 +11,9 @@ from aioquic.quic.crypto import (
 from aioquic.quic.packet import PACKET_FIXED_BIT, QuicProtocolVersion
 from aioquic.tls import CipherSuite
 
-PROTOCOL_VERSION = QuicProtocolVersion.DRAFT_25
+from .utils import SKIP_TESTS
+
+PROTOCOL_VERSION = QuicProtocolVersion.DRAFT_28
 
 CHACHA20_CLIENT_PACKET_NUMBER = 2
 CHACHA20_CLIENT_PLAIN_HEADER = binascii.unhexlify(
@@ -144,7 +145,7 @@ class CryptoTest(TestCase):
         self.assertEqual(iv, binascii.unhexlify("0a82086d32205ba22241d8dc"))
         self.assertEqual(hp, binascii.unhexlify("94b9452d2b3c7c7f6da7fdd8593537fd"))
 
-    @skipIf(os.environ.get("TRAVIS") == "true", "travis lacks a modern OpenSSL")
+    @skipIf("chacha20" in SKIP_TESTS, "Skipping chacha20 tests")
     def test_decrypt_chacha20(self):
         pair = CryptoPair()
         pair.recv.setup(
@@ -204,7 +205,7 @@ class CryptoTest(TestCase):
         self.assertEqual(plain_payload, SHORT_SERVER_PLAIN_PAYLOAD)
         self.assertEqual(packet_number, SHORT_SERVER_PACKET_NUMBER)
 
-    @skipIf(os.environ.get("TRAVIS") == "true", "travis lacks a modern OpenSSL")
+    @skipIf("chacha20" in SKIP_TESTS, "Skipping chacha20 tests")
     def test_encrypt_chacha20(self):
         pair = CryptoPair()
         pair.send.setup(
