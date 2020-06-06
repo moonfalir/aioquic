@@ -378,7 +378,14 @@ class QuicPacketRecovery:
         loss_delay = K_TIME_THRESHOLD * (
             max(self._rtt_latest, self._rtt_smoothed)
             if self._rtt_initialized
-            else K_INITIAL_RTT
+            else K_GRANULARITY
+        )
+        self._quic_logger.log_event(
+            category="recovery",
+            event="rack_timer",
+            data={
+                "timer": loss_delay
+            }
         )
         packet_threshold = space.largest_acked_packet - K_PACKET_THRESHOLD
         time_threshold = now - loss_delay
@@ -436,7 +443,6 @@ class QuicPacketRecovery:
 
             if packet.is_ack_eliciting:
                 space.ack_eliciting_in_flight -= 1
-            print("logging")
             if self._quic_logger is not None:
                 self._quic_logger.log_event(
                     category="recovery",
