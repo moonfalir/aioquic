@@ -41,6 +41,7 @@ class QuicSentPacket:
     packet_type: int
     sent_time: Optional[float] = None
     sent_bytes: int = 0
+    loss_trigger: str = ""
 
     delivery_handlers: List[Tuple[QuicDeliveryHandler, Any]] = field(
         default_factory=list

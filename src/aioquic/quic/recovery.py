@@ -341,12 +341,15 @@ class QuicPacketRecovery:
 
             # reschedule some data
             for space in self.spaces:
-                self._on_packets_lost(
-                    tuple(
+                lost_packets = list(
                         filter(
                             lambda i: i.is_crypto_packet, space.sent_packets.values()
                         )
-                    ),
+                    )
+                for i in range(len(lost_packets)):
+                    lost_packets[i].loss_trigger = "pto_expired"
+                self._on_packets_lost(
+                    lost_packets,
                     space=space,
                     now=now,
                 )
@@ -386,7 +389,11 @@ class QuicPacketRecovery:
             if packet_number > space.largest_acked_packet:
                 break
 
-            if packet_number <= packet_threshold or packet.sent_time <= time_threshold:
+            if packet_number <= packet_threshold:
+                packet.loss_trigger = "reordering_threshold" 
+                lost_packets.append(packet)
+            elif packet.sent_time <= time_threshold:
+                packet.loss_trigger = "time_threshold" 
                 lost_packets.append(packet)
             else:
                 packet_loss_time = packet.sent_time + loss_delay
@@ -429,7 +436,7 @@ class QuicPacketRecovery:
 
             if packet.is_ack_eliciting:
                 space.ack_eliciting_in_flight -= 1
-
+            print("logging")
             if self._quic_logger is not None:
                 self._quic_logger.log_event(
                     category="recovery",
@@ -437,6 +444,7 @@ class QuicPacketRecovery:
                     data={
                         "type": self._quic_logger.packet_type(packet.packet_type),
                         "packet_number": str(packet.packet_number),
+                        "trigger": packet.loss_trigger
                     },
                 )
                 self._log_metrics_updated()
