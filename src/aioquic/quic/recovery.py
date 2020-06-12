@@ -235,9 +235,25 @@ class QuicPacketRecovery:
             or sum(space.ack_eliciting_in_flight for space in self.spaces) > 0
         ):
             if not self._rtt_initialized:
-                timeout = 2 * K_INITIAL_RTT * (2 ** self._pto_count)
+                basetimeout = 2 * K_INITIAL_RTT
+                self._quic_logger.log_event(
+                    category="recovery",
+                    event="probe_timer",
+                    data={
+                        "timer": basetimeout
+                    }
+                )
+                timeout = basetimeout * (2 ** self._pto_count)
             else:
-                timeout = self.get_probe_timeout() * (2 ** self._pto_count)
+                basetimeout = self.get_probe_timeout()
+                self._quic_logger.log_event(
+                    category="recovery",
+                    event="probe_timer",
+                    data={
+                        "timer": basetimeout
+                    }
+                )
+                timeout = basetimeout * (2 ** self._pto_count)
             return self._time_of_last_sent_ack_eliciting_packet + timeout
 
         return None
