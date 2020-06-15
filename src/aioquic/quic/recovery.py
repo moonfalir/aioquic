@@ -240,7 +240,7 @@ class QuicPacketRecovery:
                     category="recovery",
                     event="probe_timer",
                     data={
-                        "timer": basetimeout
+                        "timer": self._quic_logger.encode_time(basetimeout)
                     }
                 )
                 timeout = basetimeout * (2 ** self._pto_count)
@@ -250,7 +250,7 @@ class QuicPacketRecovery:
                     category="recovery",
                     event="probe_timer",
                     data={
-                        "timer": basetimeout
+                        "timer": self._quic_logger.encode_time(basetimeout)
                     }
                 )
                 timeout = basetimeout * (2 ** self._pto_count)
@@ -413,7 +413,7 @@ class QuicPacketRecovery:
                 break
 
             if packet_number <= packet_threshold:
-                packet.loss_trigger = "reordering_threshold" 
+                packet.loss_trigger = "packet_threshold" 
                 lost_packets.append(packet)
             elif packet.sent_time <= time_threshold:
                 packet.loss_trigger = "time_threshold" 
