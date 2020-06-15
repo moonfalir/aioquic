@@ -400,7 +400,7 @@ class QuicPacketRecovery:
             category="recovery",
             event="rack_timer",
             data={
-                "timer": loss_delay
+                "timer": self._quic_logger.encode_time(loss_delay)
             }
         )
         packet_threshold = space.largest_acked_packet - K_PACKET_THRESHOLD
