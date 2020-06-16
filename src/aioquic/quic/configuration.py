@@ -80,7 +80,7 @@ class QuicConfiguration:
     certificate: Any = None
     certificate_chain: List[Any] = field(default_factory=list)
     cipher_suites: Optional[List[CipherSuite]] = None
-    initial_rtt: float = 0.1
+    initial_rtt: float = 0.5
     max_datagram_frame_size: Optional[int] = None
     private_key: Any = None
     quantum_readiness_test: bool = False
