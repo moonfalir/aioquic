@@ -7,7 +7,7 @@ from .rangeset import RangeSet
 
 # loss detection
 K_PACKET_THRESHOLD = 3
-K_INITIAL_RTT = 0.5  # seconds
+K_INITIAL_RTT = 0.25  # seconds
 K_GRANULARITY = 0.001  # seconds
 K_TIME_THRESHOLD = 9 / 8
 #K_MICRO_SECOND = 0.000001
@@ -151,13 +151,13 @@ class QuicPacketRecovery:
 
     def __init__(
         self,
-        is_client_without_1rtt: bool,
+        peer_completed_address_validation: bool,
         send_probe: Callable[[], None],
         quic_logger: Optional[QuicLoggerTrace] = None,
         custom_cc_constants: dict = {}
     ) -> None:
-        self.is_client_without_1rtt = is_client_without_1rtt
         self.max_ack_delay = 0.025
+        self.peer_completed_address_validation = peer_completed_address_validation
         self.spaces: List[QuicPacketSpace] = []
 
         # callbacks
@@ -214,51 +214,33 @@ class QuicPacketRecovery:
         if self._quic_logger is not None:
             self._log_metrics_updated()
 
-    def get_earliest_loss_space(self) -> Optional[QuicPacketSpace]:
-        loss_space = None
-        for space in self.spaces:
-            if space.loss_time is not None and (
-                loss_space is None or space.loss_time < loss_space.loss_time
-            ):
-                loss_space = space
-        return loss_space
-
     def get_loss_detection_time(self) -> float:
         # loss timer
-        loss_space = self.get_earliest_loss_space()
+        loss_space = self._get_loss_space()
         if loss_space is not None:
             return loss_space.loss_time
 
         # packet timer
         if (
-            self.is_client_without_1rtt
+            not self.peer_completed_address_validation
             or sum(space.ack_eliciting_in_flight for space in self.spaces) > 0
         ):
-            if not self._rtt_initialized:
-                basetimeout = 2 * K_INITIAL_RTT
-                self._quic_logger.log_event(
-                    category="recovery",
-                    event="probe_timer",
-                    data={
-                        "timer": self._quic_logger.encode_time(basetimeout)
-                    }
-                )
-                timeout = basetimeout * (2 ** self._pto_count)
-            else:
-                basetimeout = self.get_probe_timeout()
-                self._quic_logger.log_event(
-                    category="recovery",
-                    event="probe_timer",
-                    data={
-                        "timer": self._quic_logger.encode_time(basetimeout)
-                    }
-                )
-                timeout = basetimeout * (2 ** self._pto_count)
+            basetimeout = self.get_probe_timeout() 
+            self._quic_logger.log_event(
+                category="recovery",
+                event="probe_timer",
+                data={
+                    "timer": self._quic_logger.encode_time(basetimeout)
+                }
+            )
+            timeout = basetimeout * (2 ** self._pto_count)
+            
             return self._time_of_last_sent_ack_eliciting_packet + timeout
-
         return None
 
     def get_probe_timeout(self) -> float:
+        if not self._rtt_initialized:
+            return 2 * K_INITIAL_RTT
         return (
             self._rtt_smoothed
             + max(4 * self._rtt_variance, K_GRANULARITY)
@@ -349,7 +331,7 @@ class QuicPacketRecovery:
         self._pto_count = 0
 
     def on_loss_detection_timeout(self, now: float) -> None:
-        loss_space = self.get_earliest_loss_space()
+        loss_space = self._get_loss_space()
         if loss_space is not None:
             self._detect_loss(loss_space, now=now)
         else:
@@ -424,6 +406,15 @@ class QuicPacketRecovery:
                     space.loss_time = packet_loss_time
 
         self._on_packets_lost(lost_packets, space=space, now=now)
+
+    def _get_loss_space(self) -> Optional[QuicPacketSpace]:
+        loss_space = None
+        for space in self.spaces:
+            if space.loss_time is not None and (
+                loss_space is None or space.loss_time < loss_space.loss_time
+            ):
+                loss_space = space
+        return loss_space
 
     def _log_metrics_updated(self, log_rtt=False) -> None:
         data = {

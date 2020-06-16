@@ -23,15 +23,17 @@ PACKET_TYPE_MASK = 0xF0
 
 CONNECTION_ID_MAX_SIZE = 20
 PACKET_NUMBER_MAX_SIZE = 4
-RETRY_AEAD_KEY = binascii.unhexlify("4d32ecdb2a2133c841e4043df27d4430")
-RETRY_AEAD_NONCE = binascii.unhexlify("4d1611d05513a552c587d575")
+RETRY_AEAD_KEY_DRAFT_25 = binascii.unhexlify("4d32ecdb2a2133c841e4043df27d4430")
+RETRY_AEAD_KEY_DRAFT_29 = binascii.unhexlify("ccce187ed09a09d05728155a6cb96be1")
+RETRY_AEAD_NONCE_DRAFT_25 = binascii.unhexlify("4d1611d05513a552c587d575")
+RETRY_AEAD_NONCE_DRAFT_29 = binascii.unhexlify("e54930f97f2136f0530a8c1c")
 RETRY_INTEGRITY_TAG_SIZE = 16
 
 
 class QuicErrorCode(IntEnum):
     NO_ERROR = 0x0
     INTERNAL_ERROR = 0x1
-    SERVER_BUSY = 0x2
+    CONNECTION_REFUSED = 0x2
     FLOW_CONTROL_ERROR = 0x3
     STREAM_LIMIT_ERROR = 0x4
     STREAM_STATE_ERROR = 0x5
@@ -49,6 +51,7 @@ class QuicErrorCode(IntEnum):
 class QuicProtocolVersion(IntEnum):
     NEGOTIATION = 0
     DRAFT_28 = 0xFF00001C
+    DRAFT_29 = 0xFF00001D
 
 
 @dataclass
@@ -81,7 +84,7 @@ def decode_packet_number(truncated: int, num_bits: int, expected: int) -> int:
 
 
 def get_retry_integrity_tag(
-    packet_without_tag: bytes, original_destination_cid: bytes
+    packet_without_tag: bytes, original_destination_cid: bytes, version: int
 ) -> bytes:
     """
     Calculate the integrity tag for a RETRY packet.
@@ -93,9 +96,16 @@ def get_retry_integrity_tag(
     buf.push_bytes(packet_without_tag)
     assert buf.eof()
 
+    if version < QuicProtocolVersion.DRAFT_29:
+        aead_key = RETRY_AEAD_KEY_DRAFT_25
+        aead_nonce = RETRY_AEAD_NONCE_DRAFT_25
+    else:
+        aead_key = RETRY_AEAD_KEY_DRAFT_29
+        aead_nonce = RETRY_AEAD_NONCE_DRAFT_29
+
     # run AES-128-GCM
-    aead = AESGCM(RETRY_AEAD_KEY)
-    integrity_tag = aead.encrypt(RETRY_AEAD_NONCE, b"", buf.data)
+    aead = AESGCM(aead_key)
+    integrity_tag = aead.encrypt(aead_nonce, b"", buf.data)
     assert len(integrity_tag) == RETRY_INTEGRITY_TAG_SIZE
     return integrity_tag
 
@@ -199,7 +209,9 @@ def encode_quic_retry(
     buf.push_uint8(len(source_cid))
     buf.push_bytes(source_cid)
     buf.push_bytes(retry_token)
-    buf.push_bytes(get_retry_integrity_tag(buf.data, original_destination_cid))
+    buf.push_bytes(
+        get_retry_integrity_tag(buf.data, original_destination_cid, version=version)
+    )
     assert buf.eof()
     return buf.data
 
@@ -428,6 +440,12 @@ PROBING_FRAME_TYPES = frozenset(
         QuicFrameType.NEW_CONNECTION_ID,
     ]
 )
+
+
+@dataclass
+class QuicResetStreamFrame:
+    error_code: int
+    final_size: int
 
 
 @dataclass

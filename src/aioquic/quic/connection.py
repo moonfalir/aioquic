@@ -4,6 +4,7 @@ import os
 from collections import deque
 from dataclasses import dataclass
 from enum import Enum
+from functools import partial
 from typing import Any, Deque, Dict, FrozenSet, List, Optional, Sequence, Tuple
 
 from .. import tls
@@ -75,13 +76,14 @@ NetworkAddress = Any
 # frame sizes
 ACK_FRAME_CAPACITY = 64  # FIXME: this is arbitrary!
 APPLICATION_CLOSE_FRAME_CAPACITY = 1 + 8 + 8  # + reason length
+CONNECTION_LIMIT_FRAME_CAPACITY = 1 + 8
 HANDSHAKE_DONE_FRAME_CAPACITY = 1
-MAX_DATA_FRAME_CAPACITY = 1 + 8
 MAX_STREAM_DATA_FRAME_CAPACITY = 1 + 8 + 8
 NEW_CONNECTION_ID_FRAME_CAPACITY = 1 + 8 + 8 + 1 + 20 + 16
 PATH_CHALLENGE_FRAME_CAPACITY = 1 + 8
 PATH_RESPONSE_FRAME_CAPACITY = 1 + 8
 PING_FRAME_CAPACITY = 1
+RESET_STREAM_CAPACITY = 1 + 8 + 8 + 8
 RETIRE_CONNECTION_ID_CAPACITY = 1 + 8
 STREAMS_BLOCKED_CAPACITY = 1 + 8
 TRANSPORT_CLOSE_FRAME_CAPACITY = 1 + 8 + 8 + 8  # + reason length
@@ -118,6 +120,15 @@ def stream_is_unidirectional(stream_id: int) -> bool:
     Returns True if the stream is unidirectional.
     """
     return bool(stream_id & 2)
+
+
+class Limit:
+    def __init__(self, frame_type: int, name: str, value: int):
+        self.frame_type = frame_type
+        self.name = name
+        self.sent = value
+        self.used = 0
+        self.value = value
 
 
 class QuicConnectionError(Exception):
@@ -192,7 +203,8 @@ class QuicConnection:
     The state machine is driven by three kinds of sources:
 
     - the API user requesting data to be send out (see :meth:`connect`,
-      :meth:`send_ping`, :meth:`send_datagram_data` and :meth:`send_stream_data`)
+      :meth:`reset_stream`, :meth:`send_ping`, :meth:`send_datagram_data`
+      and :meth:`send_stream_data`)
     - data being received from the network (see :meth:`receive_datagram`)
     - a timer firing (see :meth:`handle_timer`)
 
@@ -254,14 +266,22 @@ class QuicConnection:
         self._local_ack_delay_exponent = 3
         self._local_active_connection_id_limit = 8
         self._local_initial_source_connection_id = self._host_cids[0].cid
-        self._local_max_data = configuration.max_data
-        self._local_max_data_sent = configuration.max_data
-        self._local_max_data_used = 0
+        self._local_max_data = Limit(
+            frame_type=QuicFrameType.MAX_DATA,
+            name="max_data",
+            value=configuration.max_data,
+        )
         self._local_max_stream_data_bidi_local = configuration.max_stream_data
         self._local_max_stream_data_bidi_remote = configuration.max_stream_data
         self._local_max_stream_data_uni = configuration.max_stream_data
-        self._local_max_streams_bidi = 128
-        self._local_max_streams_uni = 128
+        self._local_max_streams_bidi = Limit(
+            frame_type=QuicFrameType.MAX_STREAMS_BIDI,
+            name="max_streams_bidi",
+            value=128,
+        )
+        self._local_max_streams_uni = Limit(
+            frame_type=QuicFrameType.MAX_STREAMS_UNI, name="max_streams_uni", value=128
+        )
         self._loss_at: Optional[float] = None
         self._network_paths: List[QuicNetworkPath] = []
         #self._pacing_at: Optional[float] = None
@@ -273,7 +293,7 @@ class QuicConnection:
         self._peer_token = b""
         self._quic_logger: Optional[QuicLoggerTrace] = None
         self._remote_ack_delay_exponent = 3
-        self._remote_active_connection_id_limit = 0
+        self._remote_active_connection_id_limit = 2
         self._remote_max_idle_timeout = 0.0  # seconds
         self._remote_max_data = 0
         self._remote_max_data_used = 0
@@ -314,7 +334,7 @@ class QuicConnection:
 
         # loss recovery
         self._loss = QuicPacketRecovery(
-            is_client_without_1rtt=self._is_client,
+            peer_completed_address_validation=not self._is_client,
             quic_logger=self._quic_logger,
             send_probe=self._send_probe,
             custom_cc_constants=self._custom_cc_constants
@@ -737,6 +757,7 @@ class QuicConnection:
                 integrity_tag = get_retry_integrity_tag(
                     buf.data_slice(start_off, buf.tell() - RETRY_INTEGRITY_TAG_SIZE),
                     self._peer_cid,
+                    version=header.version,
                 )
 
                 if (
@@ -949,6 +970,16 @@ class QuicConnection:
         assert self._handshake_complete, "cannot change key before handshake completes"
         self._cryptos[tls.Epoch.ONE_RTT].update_key()
 
+    def reset_stream(self, stream_id: int, error_code: int) -> None:
+        """
+        Abruptly terminate the sending part of a stream.
+
+        :param stream_id: The stream's ID.
+        :param error_code: An error code indicating why the stream is being reset.
+        """
+        stream = self._get_or_create_stream_for_send(stream_id)
+        stream.reset(error_code)
+
     def send_ping(self, uid: int) -> None:
         """
         Send a PING frame to the peer.
@@ -975,19 +1006,7 @@ class QuicConnection:
         :param data: The data to be sent.
         :param end_stream: If set to `True`, the FIN bit will be set.
         """
-        if stream_is_client_initiated(stream_id) != self._is_client:
-            if stream_id not in self._streams:
-                raise ValueError("Cannot send data on unknown peer-initiated stream")
-            if stream_is_unidirectional(stream_id):
-                raise ValueError(
-                    "Cannot send data on peer-initiated unidirectional stream"
-                )
-
-        try:
-            stream = self._streams[stream_id]
-        except KeyError:
-            self._create_stream(stream_id=stream_id)
-            stream = self._streams[stream_id]
+        stream = self._get_or_create_stream_for_send(stream_id)
         stream.write(data, end_stream=end_stream)
 
     # Private
@@ -1057,42 +1076,12 @@ class QuicConnection:
         self.tls.handle_message(b"", self._crypto_buffers)
         self._push_crypto_data()
 
-    def _create_stream(self, stream_id: int) -> QuicStream:
-        """
-        Create a QUIC stream in order to send data to the peer.
-        """
-        # determine limits
-        if stream_is_unidirectional(stream_id):
-            max_stream_data_local = 0
-            max_stream_data_remote = self._remote_max_stream_data_uni
-            max_streams = self._remote_max_streams_uni
-            streams_blocked = self._streams_blocked_uni
-        else:
-            max_stream_data_local = self._local_max_stream_data_bidi_local
-            max_stream_data_remote = self._remote_max_stream_data_bidi_remote
-            max_streams = self._remote_max_streams_bidi
-            streams_blocked = self._streams_blocked_bidi
-
-        # create stream
-        stream = self._streams[stream_id] = QuicStream(
-            stream_id=stream_id,
-            max_stream_data_local=max_stream_data_local,
-            max_stream_data_remote=max_stream_data_remote,
-        )
-
-        # mark stream as blocked if needed
-        if stream_id // 4 >= max_streams:
-            stream.is_blocked = True
-            streams_blocked.append(stream)
-            self._streams_blocked_pending = True
-
-        return stream
-
     def _discard_epoch(self, epoch: tls.Epoch) -> None:
-        self._logger.debug("Discarding epoch %s", epoch)
-        self._cryptos[epoch].teardown()
-        self._loss.discard_space(self._spaces[epoch])
-        self._spaces[epoch].discarded = True
+        if not self._spaces[epoch].discarded:
+            self._logger.debug("Discarding epoch %s", epoch)
+            self._cryptos[epoch].teardown()
+            self._loss.discard_space(self._spaces[epoch])
+            self._spaces[epoch].discarded = True
 
     def _find_network_path(self, addr: NetworkAddress) -> QuicNetworkPath:
         # check existing network paths
@@ -1130,12 +1119,15 @@ class QuicConnection:
                 max_streams = self._local_max_streams_bidi
 
             # check max streams
-            if stream_id // 4 >= max_streams:
+            stream_count = (stream_id // 4) + 1
+            if stream_count > max_streams.value:
                 raise QuicConnectionError(
                     error_code=QuicErrorCode.STREAM_LIMIT_ERROR,
                     frame_type=frame_type,
                     reason_phrase="Too many streams open",
                 )
+            elif stream_count > max_streams.used:
+                max_streams.used = stream_count
 
             # create stream
             self._logger.debug("Stream %d created by peer" % stream_id)
@@ -1144,6 +1136,48 @@ class QuicConnection:
                 max_stream_data_local=max_stream_data_local,
                 max_stream_data_remote=max_stream_data_remote,
             )
+        return stream
+
+    def _get_or_create_stream_for_send(self, stream_id: int) -> QuicStream:
+        """
+        Get or create a QUIC stream in order to send data to the peer.
+
+        This always occurs as a result of an API call.
+        """
+        if stream_is_client_initiated(stream_id) != self._is_client:
+            if stream_id not in self._streams:
+                raise ValueError("Cannot send data on unknown peer-initiated stream")
+            if stream_is_unidirectional(stream_id):
+                raise ValueError(
+                    "Cannot send data on peer-initiated unidirectional stream"
+                )
+
+        stream = self._streams.get(stream_id, None)
+        if stream is None:
+            # determine limits
+            if stream_is_unidirectional(stream_id):
+                max_stream_data_local = 0
+                max_stream_data_remote = self._remote_max_stream_data_uni
+                max_streams = self._remote_max_streams_uni
+                streams_blocked = self._streams_blocked_uni
+            else:
+                max_stream_data_local = self._local_max_stream_data_bidi_local
+                max_stream_data_remote = self._remote_max_stream_data_bidi_remote
+                max_streams = self._remote_max_streams_bidi
+                streams_blocked = self._streams_blocked_bidi
+
+            # create stream
+            stream = self._streams[stream_id] = QuicStream(
+                stream_id=stream_id,
+                max_stream_data_local=max_stream_data_local,
+                max_stream_data_remote=max_stream_data_remote,
+            )
+
+            # mark stream as blocked if needed
+            if stream_id // 4 >= max_streams:
+                stream.is_blocked = True
+                streams_blocked.append(stream)
+                self._streams_blocked_pending = True
         return stream
 
     def _handle_session_ticket(self, session_ticket: tls.SessionTicket) -> None:
@@ -1211,12 +1245,30 @@ class QuicConnection:
         self.tls.update_traffic_key_cb = self._update_traffic_key
 
         # packet spaces
-        self._cryptos = {
-            tls.Epoch.INITIAL: CryptoPair(),
-            tls.Epoch.ZERO_RTT: CryptoPair(),
-            tls.Epoch.HANDSHAKE: CryptoPair(),
-            tls.Epoch.ONE_RTT: CryptoPair(),
-        }
+        def create_crypto_pair(epoch: tls.Epoch) -> CryptoPair:
+            epoch_name = ["initial", "0rtt", "handshake", "1rtt"][epoch.value]
+            secret_names = [
+                "server_%s_secret" % epoch_name,
+                "client_%s_secret" % epoch_name,
+            ]
+            recv_secret_name = secret_names[not self._is_client]
+            send_secret_name = secret_names[self._is_client]
+            return CryptoPair(
+                recv_setup_cb=partial(self._log_key_updated, recv_secret_name),
+                recv_teardown_cb=partial(self._log_key_retired, recv_secret_name),
+                send_setup_cb=partial(self._log_key_updated, send_secret_name),
+                send_teardown_cb=partial(self._log_key_retired, send_secret_name),
+            )
+
+        self._cryptos = dict(
+            (epoch, create_crypto_pair(epoch))
+            for epoch in (
+                tls.Epoch.INITIAL,
+                tls.Epoch.ZERO_RTT,
+                tls.Epoch.HANDSHAKE,
+                tls.Epoch.ONE_RTT,
+            )
+        )
         self._crypto_buffers = {
             tls.Epoch.INITIAL: Buffer(capacity=CRYPTO_BUFFER_SIZE),
             tls.Epoch.HANDSHAKE: Buffer(capacity=CRYPTO_BUFFER_SIZE),
@@ -1364,7 +1416,7 @@ class QuicConnection:
                     self._handshake_confirmed = True
                     self._handshake_done_pending = True
 
-                self._loss.is_client_without_1rtt = False
+                self._loss.peer_completed_address_validation = True
                 self._replenish_connection_ids()
                 self._events.append(
                     events.HandshakeCompleted(
@@ -1462,7 +1514,9 @@ class QuicConnection:
         # log frame
         if self._quic_logger is not None:
             context.quic_logger_frames.append(
-                self._quic_logger.encode_max_data_frame(maximum=max_data)
+                self._quic_logger.encode_connection_limit_frame(
+                    frame_type=frame_type, maximum=max_data
+                )
             )
 
         if max_data > self._remote_max_data:
@@ -1513,8 +1567,8 @@ class QuicConnection:
         # log frame
         if self._quic_logger is not None:
             context.quic_logger_frames.append(
-                self._quic_logger.encode_max_streams_frame(
-                    is_unidirectional=False, maximum=max_streams
+                self._quic_logger.encode_connection_limit_frame(
+                    frame_type=frame_type, maximum=max_streams
                 )
             )
 
@@ -1536,8 +1590,8 @@ class QuicConnection:
         # log frame
         if self._quic_logger is not None:
             context.quic_logger_frames.append(
-                self._quic_logger.encode_max_streams_frame(
-                    is_unidirectional=True, maximum=max_streams
+                self._quic_logger.encode_connection_limit_frame(
+                    frame_type=frame_type, maximum=max_streams
                 )
             )
 
@@ -1802,7 +1856,7 @@ class QuicConnection:
                 reason_phrase="Over stream data limit",
             )
         newly_received = max(0, offset + length - stream._recv_highest)
-        if self._local_max_data_used + newly_received > self._local_max_data:
+        if self._local_max_data.used + newly_received > self._local_max_data.value:
             raise QuicConnectionError(
                 error_code=QuicErrorCode.FLOW_CONTROL_ERROR,
                 frame_type=frame_type,
@@ -1812,7 +1866,7 @@ class QuicConnection:
         event = stream.add_frame(frame)
         if event is not None:
             self._events.append(event)
-        self._local_max_data_used += newly_received
+        self._local_max_data.used += newly_received
 
     def _handle_stream_data_blocked_frame(
         self, context: QuicReceiveContext, frame_type: int, buf: Buffer
@@ -1853,6 +1907,28 @@ class QuicConnection:
                 )
             )
 
+    def _log_key_retired(self, key_type: str, trigger: str) -> None:
+        """
+        Log a key retirement.
+        """
+        if self._quic_logger is not None:
+            self._quic_logger.log_event(
+                category="security",
+                event="key_retired",
+                data={"key_type": key_type, "trigger": trigger},
+            )
+
+    def _log_key_updated(self, key_type: str, trigger: str) -> None:
+        """
+        Log a key update.
+        """
+        if self._quic_logger is not None:
+            self._quic_logger.log_event(
+                category="security",
+                event="key_updated",
+                data={"key_type": key_type, "trigger": trigger},
+            )
+
     def _on_ack_delivery(
         self, delivery: QuicDeliveryState, space: QuicPacketSpace, highest_acked: int
     ) -> None:
@@ -1862,19 +1938,21 @@ class QuicConnection:
         if delivery == QuicDeliveryState.ACKED:
             space.ack_queue.subtract(0, highest_acked + 1)
 
+    def _on_connection_limit_delivery(
+        self, delivery: QuicDeliveryState, limit: Limit
+    ) -> None:
+        """
+        Callback when a MAX_DATA or MAX_STREAMS frame is acknowledged or lost.
+        """
+        if delivery != QuicDeliveryState.ACKED:
+            limit.sent = 0
+
     def _on_handshake_done_delivery(self, delivery: QuicDeliveryState) -> None:
         """
         Callback when a HANDSHAKE_DONE frame is acknowledged or lost.
         """
         if delivery != QuicDeliveryState.ACKED:
             self._handshake_done_pending = True
-
-    def _on_max_data_delivery(self, delivery: QuicDeliveryState) -> None:
-        """
-        Callback when a MAX_DATA frame is acknowledged or lost.
-        """
-        if delivery != QuicDeliveryState.ACKED:
-            self._local_max_data_sent = 0
 
     def _on_max_stream_data_delivery(
         self, delivery: QuicDeliveryState, stream: QuicStream
@@ -2092,12 +2170,12 @@ class QuicConnection:
             ack_delay_exponent=self._local_ack_delay_exponent,
             active_connection_id_limit=self._local_active_connection_id_limit,
             max_idle_timeout=int(self._configuration.idle_timeout * 1000),
-            initial_max_data=self._local_max_data,
+            initial_max_data=self._local_max_data.value,
             initial_max_stream_data_bidi_local=self._local_max_stream_data_bidi_local,
             initial_max_stream_data_bidi_remote=self._local_max_stream_data_bidi_remote,
             initial_max_stream_data_uni=self._local_max_stream_data_uni,
-            initial_max_streams_bidi=self._local_max_streams_bidi,
-            initial_max_streams_uni=self._local_max_streams_uni,
+            initial_max_streams_bidi=self._local_max_streams_bidi.value,
+            initial_max_streams_uni=self._local_max_streams_uni.value,
             initial_source_connection_id=self._local_initial_source_connection_id,
             max_ack_delay=25,
             max_datagram_frame_size=self._configuration.max_datagram_frame_size,
@@ -2270,7 +2348,7 @@ class QuicConnection:
                         )
                     self._streams_blocked_pending = False
 
-                # MAX_DATA
+                # MAX_DATA and MAX_STREAMS
                 self._write_connection_limits(builder=builder, space=space)
 
             # stream-level limits
@@ -2305,9 +2383,15 @@ class QuicConnection:
                 except QuicPacketBuilderStop:
                     break
 
-            # STREAM
+            # STREAM and RESET_STREAM
             for stream in self._streams.values():
-                if not stream.is_blocked and not stream.send_buffer_is_empty:
+                if stream.reset_pending:
+                    self._write_reset_stream_frame(
+                        builder=builder,
+                        frame_type=QuicFrameType.RESET_STREAM,
+                        stream=stream,
+                    )
+                elif not stream.is_blocked and not stream.send_buffer_is_empty:
                     self._remote_max_data_used += self._write_stream_frame(
                         builder=builder,
                         space=space,
@@ -2442,25 +2526,33 @@ class QuicConnection:
         self, builder: QuicPacketBuilder, space: QuicPacketSpace
     ) -> None:
         """
-        Raise MAX_DATA if needed.
+        Raise MAX_DATA or MAX_STREAMS if needed.
         """
-        if self._local_max_data_used * 2 > self._local_max_data:
-            self._local_max_data *= 2
-            self._logger.debug("Local max_data raised to %d", self._local_max_data)
-        if self._local_max_data_sent != self._local_max_data:
-            buf = builder.start_frame(
-                QuicFrameType.MAX_DATA,
-                capacity=MAX_DATA_FRAME_CAPACITY,
-                handler=self._on_max_data_delivery,
-            )
-            buf.push_uint_var(self._local_max_data)
-            self._local_max_data_sent = self._local_max_data
-
-            # log frame
-            if self._quic_logger is not None:
-                builder.quic_logger_frames.append(
-                    self._quic_logger.encode_max_data_frame(self._local_max_data)
+        for limit in (
+            self._local_max_data,
+            self._local_max_streams_bidi,
+            self._local_max_streams_uni,
+        ):
+            if limit.used * 2 > limit.value:
+                limit.value *= 2
+                self._logger.debug("Local %s raised to %d", limit.name, limit.value)
+            if limit.value != limit.sent:
+                buf = builder.start_frame(
+                    limit.frame_type,
+                    capacity=CONNECTION_LIMIT_FRAME_CAPACITY,
+                    handler=self._on_connection_limit_delivery,
+                    handler_args=(limit,),
                 )
+                buf.push_uint_var(limit.value)
+                limit.sent = limit.value
+
+                # log frame
+                if self._quic_logger is not None:
+                    builder.quic_logger_frames.append(
+                        self._quic_logger.encode_connection_limit_frame(
+                            frame_type=limit.frame_type, maximum=limit.value,
+                        )
+                    )
 
     def _write_crypto_frame(
         self, builder: QuicPacketBuilder, space: QuicPacketSpace, stream: QuicStream
@@ -2601,6 +2693,29 @@ class QuicConnection:
         # log frame
         if self._quic_logger is not None:
             builder.quic_logger_frames.append(self._quic_logger.encode_ping_frame())
+
+    def _write_reset_stream_frame(
+        self, builder: QuicPacketBuilder, frame_type: QuicFrameType, stream: QuicStream,
+    ) -> None:
+        buf = builder.start_frame(
+            frame_type=frame_type,
+            capacity=RESET_STREAM_CAPACITY,
+            handler=stream.on_reset_delivery,
+        )
+        reset = stream.get_reset_frame()
+        buf.push_uint_var(stream.stream_id)
+        buf.push_uint_var(reset.error_code)
+        buf.push_uint_var(reset.final_size)
+
+        # log frame
+        if self._quic_logger is not None:
+            builder.quic_logger_frames.append(
+                self._quic_logger.encode_reset_stream_frame(
+                    error_code=reset.error_code,
+                    final_size=reset.final_size,
+                    stream_id=stream.stream_id,
+                )
+            )
 
     def _write_retire_connection_id_frame(
         self, builder: QuicPacketBuilder, sequence_number: int
