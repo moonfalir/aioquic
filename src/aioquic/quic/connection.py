@@ -334,6 +334,7 @@ class QuicConnection:
 
         # loss recovery
         self._loss = QuicPacketRecovery(
+            initial_rtt=configuration.initial_rtt,
             peer_completed_address_validation=not self._is_client,
             quic_logger=self._quic_logger,
             send_probe=self._send_probe,
@@ -2183,7 +2184,10 @@ class QuicConnection:
             if self._configuration.quantum_readiness_test
             else None,
         )
-        if not self._is_client:
+        if not self._is_client and (
+            self._version >= QuicProtocolVersion.DRAFT_28
+            or self._retry_source_connection_id
+        ):
             quic_transport_parameters.original_destination_connection_id = (
                 self._original_destination_connection_id
             )

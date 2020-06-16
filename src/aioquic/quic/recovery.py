@@ -7,7 +7,6 @@ from .rangeset import RangeSet
 
 # loss detection
 K_PACKET_THRESHOLD = 3
-K_INITIAL_RTT = 0.25  # seconds
 K_GRANULARITY = 0.001  # seconds
 K_TIME_THRESHOLD = 9 / 8
 #K_MICRO_SECOND = 0.000001
@@ -151,6 +150,7 @@ class QuicPacketRecovery:
 
     def __init__(
         self,
+        initial_rtt: float,
         peer_completed_address_validation: bool,
         send_probe: Callable[[], None],
         quic_logger: Optional[QuicLoggerTrace] = None,
@@ -166,6 +166,7 @@ class QuicPacketRecovery:
 
         # loss detection
         self._pto_count = 0
+        self._rtt_initial = initial_rtt
         self._rtt_initialized = False
         self._rtt_latest = 0.0
         self._rtt_min = math.inf
@@ -240,7 +241,7 @@ class QuicPacketRecovery:
 
     def get_probe_timeout(self) -> float:
         if not self._rtt_initialized:
-            return 2 * K_INITIAL_RTT
+            return 2 * self._rtt_initial
         return (
             self._rtt_smoothed
             + max(4 * self._rtt_variance, K_GRANULARITY)
