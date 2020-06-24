@@ -226,14 +226,15 @@ class QuicPacketRecovery:
             not self.peer_completed_address_validation
             or sum(space.ack_eliciting_in_flight for space in self.spaces) > 0
         ):
-            basetimeout = self.get_probe_timeout() 
-            self._quic_logger.log_event(
-                category="recovery",
-                event="probe_timer",
-                data={
-                    "timer": self._quic_logger.encode_time(basetimeout)
-                }
-            )
+            basetimeout = self.get_probe_timeout()
+            if self._quic_logger is not None:
+                self._quic_logger.log_event(
+                    category="recovery",
+                    event="probe_timer",
+                    data={
+                        "timer": self._quic_logger.encode_time(basetimeout)
+                    }
+                )
             timeout = basetimeout * (2 ** self._pto_count)
             
             return self._time_of_last_sent_ack_eliciting_packet + timeout
@@ -379,13 +380,14 @@ class QuicPacketRecovery:
             if self._rtt_initialized
             else K_GRANULARITY
         )
-        self._quic_logger.log_event(
-            category="recovery",
-            event="rack_timer",
-            data={
-                "timer": self._quic_logger.encode_time(loss_delay)
-            }
-        )
+        if self._quic_logger is not None:
+            self._quic_logger.log_event(
+                category="recovery",
+                event="rack_timer",
+                data={
+                    "timer": self._quic_logger.encode_time(loss_delay)
+                }
+            )
         packet_threshold = space.largest_acked_packet - K_PACKET_THRESHOLD
         time_threshold = now - loss_delay
 
