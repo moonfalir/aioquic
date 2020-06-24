@@ -5,7 +5,7 @@ from collections import deque
 from dataclasses import dataclass
 from enum import Enum
 from functools import partial
-from typing import Any, Deque, Dict, FrozenSet, List, Optional, Sequence, Tuple
+from typing import Any, Deque, Dict, FrozenSet, List, Optional, Sequence, Set, Tuple
 
 from .. import tls
 from ..buffer import UINT_VAR_MAX, Buffer, BufferReadError, size_uint_var
@@ -43,7 +43,7 @@ from .packet_builder import (
     QuicPacketBuilderStop,
 )
 from .recovery import K_GRANULARITY, QuicPacketRecovery, QuicPacketSpace
-from .stream import QuicStream
+from .stream import FinalSizeError, QuicStream
 
 logger = logging.getLogger("quic")
 
@@ -257,7 +257,7 @@ class QuicConnection:
             QuicConnectionId(
                 cid=os.urandom(configuration.connection_id_length),
                 sequence_number=0,
-                stateless_reset_token=os.urandom(16),
+                stateless_reset_token=os.urandom(16) if not self._is_client else None,
                 was_sent=True,
             )
         ]
@@ -287,9 +287,11 @@ class QuicConnection:
         #self._pacing_at: Optional[float] = None
         self._packet_number = 0
         self._parameters_received = False
-        self._peer_cid = os.urandom(configuration.connection_id_length)
-        self._peer_cid_seq: Optional[int] = None
+        self._peer_cid = QuicConnectionId(
+            cid=os.urandom(configuration.connection_id_length), sequence_number=None
+        )
         self._peer_cid_available: List[QuicConnectionId] = []
+        self._peer_cid_sequence_numbers: Set[int] = set([0])
         self._peer_token = b""
         self._quic_logger: Optional[QuicLoggerTrace] = None
         self._remote_ack_delay_exponent = 3
@@ -303,20 +305,21 @@ class QuicConnection:
         self._remote_max_stream_data_uni = 0
         self._remote_max_streams_bidi = 0
         self._remote_max_streams_uni = 0
+        self._retry_count = 0
         self._retry_source_connection_id = retry_source_connection_id
         self._spaces: Dict[tls.Epoch, QuicPacketSpace] = {}
         self._spin_bit = False
         self._spin_highest_pn = 0
         self._state = QuicConnectionState.FIRSTFLIGHT
-        self._stateless_retry_count = 0
         self._streams: Dict[int, QuicStream] = {}
         self._streams_blocked_bidi: List[QuicStream] = []
         self._streams_blocked_uni: List[QuicStream] = []
         self._version: Optional[int] = None
         self._custom_cc_constants = custom_cc_constants
+        self._version_negotiation_count = 0
 
         if self._is_client:
-            self._original_destination_connection_id = self._peer_cid
+            self._original_destination_connection_id = self._peer_cid.cid
         else:
             self._original_destination_connection_id = (
                 original_destination_connection_id
@@ -409,18 +412,10 @@ class QuicConnection:
         """
         if self._peer_cid_available:
             # retire previous CID
-            self._logger.debug(
-                "Retiring CID %s (%d)", dump_cid(self._peer_cid), self._peer_cid_seq
-            )
-            self._retire_connection_ids.append(self._peer_cid_seq)
+            self._retire_peer_cid(self._peer_cid)
 
             # assign new CID
-            connection_id = self._peer_cid_available.pop(0)
-            self._peer_cid_seq = connection_id.sequence_number
-            self._peer_cid = connection_id.cid
-            self._logger.debug(
-                "Switching to CID %s (%d)", dump_cid(self._peer_cid), self._peer_cid_seq
-            )
+            self._consume_peer_cid()
 
     def close(
         self,
@@ -485,7 +480,7 @@ class QuicConnection:
             host_cid=self.host_cid,
             is_client=self._is_client,
             packet_number=self._packet_number,
-            peer_cid=self._peer_cid,
+            peer_cid=self._peer_cid.cid,
             peer_token=self._peer_token,
             quic_logger=self._quic_logger,
             spin_bit=self._spin_bit,
@@ -562,7 +557,7 @@ class QuicConnection:
                                 "scid": dump_cid(self.host_cid)
                                 if is_long_header(packet.packet_type)
                                 else "",
-                                "dcid": dump_cid(self._peer_cid),
+                                "dcid": dump_cid(self._peer_cid.cid),
                             },
                             "frames": packet.quic_logger_frames,
                         },
@@ -706,6 +701,7 @@ class QuicConnection:
                 self._is_client
                 and self._state == QuicConnectionState.FIRSTFLIGHT
                 and header.version == QuicProtocolVersion.NEGOTIATION
+                and not self._version_negotiation_count
             ):
                 # version negotiation
                 versions = []
@@ -724,6 +720,11 @@ class QuicConnection:
                             "frames": [],
                         },
                     )
+                if self._version in versions:
+                    self._logger.warning(
+                        "Version negotiation packet contains %s" % self._version
+                    )
+                    return
                 common = set(self._configuration.supported_versions).intersection(
                     versions
                 )
@@ -737,6 +738,7 @@ class QuicConnection:
                     self._close_end()
                     return
                 self._version = QuicProtocolVersion(max(common))
+                self._version_negotiation_count += 1
                 self._logger.info("Retrying with %s", self._version)
                 self._connect(now=now)
                 return
@@ -754,17 +756,17 @@ class QuicConnection:
                 return
 
             if self._is_client and header.packet_type == PACKET_TYPE_RETRY:
-                # calculate stateless retry integrity tag
+                # calculate retry integrity tag
                 integrity_tag = get_retry_integrity_tag(
                     buf.data_slice(start_off, buf.tell() - RETRY_INTEGRITY_TAG_SIZE),
-                    self._peer_cid,
+                    self._peer_cid.cid,
                     version=header.version,
                 )
 
                 if (
                     header.destination_cid == self.host_cid
                     and header.integrity_tag == integrity_tag
-                    and not self._stateless_retry_count
+                    and not self._retry_count
                 ):
                     if self._quic_logger is not None:
                         self._quic_logger.log_event(
@@ -780,11 +782,13 @@ class QuicConnection:
                             },
                         )
 
-                    self._peer_cid = header.source_cid
+                    self._peer_cid.cid = header.source_cid
                     self._peer_token = header.token
+                    self._retry_count += 1
                     self._retry_source_connection_id = header.source_cid
-                    self._stateless_retry_count += 1
-                    self._logger.info("Performing stateless retry")
+                    self._logger.info(
+                        "Retrying with token (%d bytes)" % len(header.token)
+                    )
                     self._connect(now=now)
                 return
 
@@ -878,9 +882,9 @@ class QuicConnection:
                 self._discard_epoch(tls.Epoch.INITIAL)
 
             # update state
-            if self._peer_cid_seq is None:
-                self._peer_cid = header.source_cid
-                self._peer_cid_seq = 0
+            if self._peer_cid.sequence_number is None:
+                self._peer_cid.cid = header.source_cid
+                self._peer_cid.sequence_number = 0
 
             if self._state == QuicConnectionState.FIRSTFLIGHT:
                 self._set_state(QuicConnectionState.CONNECTED)
@@ -1040,6 +1044,19 @@ class QuicConnection:
                 reason_phrase="Stream is receive-only",
             )
 
+    def _consume_peer_cid(self) -> None:
+        """
+        Update the destination connection ID by taking the next
+        available connection ID provided by the peer.
+        """
+
+        self._peer_cid = self._peer_cid_available.pop(0)
+        self._logger.debug(
+            "Switching to CID %s (%d)",
+            dump_cid(self._peer_cid.cid),
+            self._peer_cid.sequence_number,
+        )
+
     def _close_begin(self, is_initiator: bool, now: float) -> None:
         """
         Begin the close procedure.
@@ -1072,7 +1089,7 @@ class QuicConnection:
         assert self._is_client
 
         self._close_at = now + self._configuration.idle_timeout
-        self._initialize(self._peer_cid)
+        self._initialize(self._peer_cid.cid)
 
         self.tls.handle_message(b"", self._crypto_buffers)
         self._push_crypto_data()
@@ -1624,13 +1641,56 @@ class QuicConnection:
                 )
             )
 
-        self._peer_cid_available.append(
-            QuicConnectionId(
-                cid=connection_id,
-                sequence_number=sequence_number,
-                stateless_reset_token=stateless_reset_token,
+        # sanity check
+        if retire_prior_to > sequence_number:
+            raise QuicConnectionError(
+                error_code=QuicErrorCode.PROTOCOL_VIOLATION,
+                frame_type=frame_type,
+                reason_phrase="retire_prior_to is greater than the sequence_number",
+            )
+
+        # determine which CIDs to retire
+        change_cid = False
+        retire = list(
+            filter(
+                lambda c: c.sequence_number < retire_prior_to, self._peer_cid_available
             )
         )
+        if self._peer_cid.sequence_number < retire_prior_to:
+            change_cid = True
+            retire.insert(0, self._peer_cid)
+
+        # update available CIDs
+        self._peer_cid_available = list(
+            filter(
+                lambda c: c.sequence_number >= retire_prior_to, self._peer_cid_available
+            )
+        )
+        if sequence_number not in self._peer_cid_sequence_numbers:
+            self._peer_cid_available.append(
+                QuicConnectionId(
+                    cid=connection_id,
+                    sequence_number=sequence_number,
+                    stateless_reset_token=stateless_reset_token,
+                )
+            )
+            self._peer_cid_sequence_numbers.add(sequence_number)
+
+        # retire previous CIDs
+        for quic_connection_id in retire:
+            self._retire_peer_cid(quic_connection_id)
+
+        # assign new CID if we retired the active one
+        if change_cid:
+            self._consume_peer_cid()
+
+        # check number of active connection IDs, including the selected one
+        if 1 + len(self._peer_cid_available) > self._local_active_connection_id_limit:
+            raise QuicConnectionError(
+                error_code=QuicErrorCode.CONNECTION_ID_LIMIT_ERROR,
+                frame_type=frame_type,
+                reason_phrase="Too many active connection IDs",
+            )
 
     def _handle_new_token_frame(
         self, context: QuicReceiveContext, frame_type: int, buf: Buffer
@@ -1744,16 +1804,40 @@ class QuicConnection:
         # check stream direction
         self._assert_stream_can_receive(frame_type, stream_id)
 
+        # check flow-control limits
+        stream = self._get_or_create_stream(frame_type, stream_id)
+        if final_size > stream.max_stream_data_local:
+            raise QuicConnectionError(
+                error_code=QuicErrorCode.FLOW_CONTROL_ERROR,
+                frame_type=frame_type,
+                reason_phrase="Over stream data limit",
+            )
+        newly_received = max(0, final_size - stream._recv_highest)
+        if self._local_max_data.used + newly_received > self._local_max_data.value:
+            raise QuicConnectionError(
+                error_code=QuicErrorCode.FLOW_CONTROL_ERROR,
+                frame_type=frame_type,
+                reason_phrase="Over connection data limit",
+            )
+
+        # process reset
         self._logger.info(
             "Stream %d reset by peer (error code %d, final size %d)",
             stream_id,
             error_code,
             final_size,
         )
-        # stream = self._get_or_create_stream(frame_type, stream_id)
-        self._events.append(
-            events.StreamReset(error_code=error_code, stream_id=stream_id)
-        )
+        try:
+            event = stream.handle_reset(error_code=error_code, final_size=final_size)
+        except FinalSizeError as exc:
+            raise QuicConnectionError(
+                error_code=QuicErrorCode.FINAL_SIZE_ERROR,
+                frame_type=frame_type,
+                reason_phrase=str(exc),
+            )
+        if event is not None:
+            self._events.append(event)
+        self._local_max_data.used += newly_received
 
     def _handle_retire_connection_id_frame(
         self, context: QuicReceiveContext, frame_type: int, buf: Buffer
@@ -1767,6 +1851,13 @@ class QuicConnection:
         if self._quic_logger is not None:
             context.quic_logger_frames.append(
                 self._quic_logger.encode_retire_connection_id_frame(sequence_number)
+            )
+
+        if sequence_number >= self._host_cid_seq:
+            raise QuicConnectionError(
+                error_code=QuicErrorCode.PROTOCOL_VIOLATION,
+                frame_type=frame_type,
+                reason_phrase="Cannot retire unknown connection ID",
             )
 
         # find the connection ID by sequence number
@@ -1864,7 +1955,15 @@ class QuicConnection:
                 reason_phrase="Over connection data limit",
             )
 
-        event = stream.add_frame(frame)
+        # process data
+        try:
+            event = stream.add_frame(frame)
+        except FinalSizeError as exc:
+            raise QuicConnectionError(
+                error_code=QuicErrorCode.FINAL_SIZE_ERROR,
+                frame_type=frame_type,
+                reason_phrase=str(exc),
+            )
         if event is not None:
             self._events.append(event)
         self._local_max_data.used += newly_received
@@ -2061,6 +2160,17 @@ class QuicConnection:
             )
             self._host_cid_seq += 1
 
+    def _retire_peer_cid(self, connection_id: QuicConnectionId) -> None:
+        """
+        Retire a destination connection ID.
+        """
+        self._logger.debug(
+            "Retiring CID %s (%d)",
+            dump_cid(connection_id.cid),
+            connection_id.sequence_number,
+        )
+        self._retire_connection_ids.append(connection_id.sequence_number)
+
     def _push_crypto_data(self) -> None:
         for epoch, buf in self._crypto_buffers.items():
             self._crypto_streams[epoch].write(buf.data)
@@ -2134,6 +2244,14 @@ class QuicConnection:
                     frame_type=QuicFrameType.CRYPTO,
                     reason_phrase="active_connection_id_limit must be no less than 2",
                 )
+            if (
+                self._is_client
+                and self._peer_cid.sequence_number == 0
+                and quic_transport_parameters.stateless_reset_token is not None
+            ):
+                self._peer_cid.stateless_reset_token = (
+                    quic_transport_parameters.stateless_reset_token
+                )
 
         # store remote parameters
         if not from_session_ticket:
@@ -2183,6 +2301,7 @@ class QuicConnection:
             quantum_readiness=b"Q" * 1200
             if self._configuration.quantum_readiness_test
             else None,
+            stateless_reset_token=self._host_cids[0].stateless_reset_token,
         )
         if not self._is_client and (
             self._version >= QuicProtocolVersion.DRAFT_28
@@ -2330,11 +2449,11 @@ class QuicConnection:
                         )
 
                 # RETIRE_CONNECTION_ID
-                while self._retire_connection_ids:
-                    sequence_number = self._retire_connection_ids.pop(0)
+                for sequence_number in self._retire_connection_ids[:]:
                     self._write_retire_connection_id_frame(
                         builder=builder, sequence_number=sequence_number
                     )
+                    self._retire_connection_ids.pop(0)
 
                 # STREAMS_BLOCKED
                 if self._streams_blocked_pending:
