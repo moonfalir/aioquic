@@ -505,6 +505,7 @@ class QuicConnection:
                     self._close_pending = False
                     break
             self._close_begin(is_initiator=True, now=now)
+            self._close_end(isclient=True)
         else:
             # congestion control
             builder.max_flight_bytes = (
@@ -630,7 +631,7 @@ class QuicConnection:
                     frame_type=None,
                     reason_phrase="Idle timeout",
                 )
-            self._close_end()
+            self._close_end(isclient=False)
             return
 
         # loss detection timeout
@@ -735,7 +736,7 @@ class QuicConnection:
                         frame_type=None,
                         reason_phrase="Could not find a common protocol version",
                     )
-                    self._close_end()
+                    self._close_end(isclient=False)
                     return
                 self._version = QuicProtocolVersion(max(common))
                 self._version_negotiation_count += 1
@@ -1067,19 +1068,20 @@ class QuicConnection:
         else:
             self._set_state(QuicConnectionState.DRAINING)
 
-    def _close_end(self) -> None:
+    def _close_end(self, isclient: bool) -> None:
         """
         End the close procedure.
         """
-        self._close_at = None
-        for epoch in self._spaces.keys():
-            self._discard_epoch(epoch)
-        self._events.append(self._close_event)
-        self._set_state(QuicConnectionState.TERMINATED)
+        if not isclient:
+            self._close_at = None
+            for epoch in self._spaces.keys():
+                self._discard_epoch(epoch)
+            self._events.append(self._close_event)
+            self._set_state(QuicConnectionState.TERMINATED)
 
         # signal log end
         if self._quic_logger is not None:
-            self._configuration.quic_logger.end_trace(self._quic_logger)
+            self._configuration.quic_logger.end_trace(self._quic_logger, isclient)
             self._quic_logger = None
 
     def _connect(self, now: float) -> None:

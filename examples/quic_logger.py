@@ -15,11 +15,16 @@ class QuicDirectoryLogger(QuicLogger):
         self.path = path
         super().__init__()
 
-    def end_trace(self, trace: QuicLoggerTrace) -> None:
+    def end_trace(self, trace: QuicLoggerTrace, isclient: bool) -> None:
         trace_dict = trace.to_dict()
-        trace_path = os.path.join(
-            self.path, trace_dict["common_fields"]["ODCID"] + ".qlog"
-        )
+        if isclient:
+            trace_path = os.path.join(
+                self.path, trace_dict["common_fields"]["ODCID"] + ".client.qlog"
+            )
+        else:
+            trace_path = os.path.join(
+                self.path, trace_dict["common_fields"]["ODCID"] + ".qlog"
+            )
         with open(trace_path, "w") as logger_fp:
             json.dump({"qlog_version": "draft-01", "traces": [trace_dict]}, logger_fp)
         self._traces.remove(trace)
