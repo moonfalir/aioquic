@@ -9,8 +9,8 @@ from .rangeset import RangeSet
 K_PACKET_THRESHOLD = 3
 K_GRANULARITY = 0.001  # seconds
 K_TIME_THRESHOLD = 9 / 8
-#K_MICRO_SECOND = 0.000001
-#K_SECOND = 1.0
+K_MICRO_SECOND = 0.000001
+K_SECOND = 1.0
 
 # congestion control
 K_MAX_DATAGRAM_SIZE = 1280
@@ -35,50 +35,50 @@ class QuicPacketSpace:
         self.sent_packets: Dict[int, QuicSentPacket] = {}
 
 
-#class QuicPacketPacer:
-#    def __init__(self) -> None:
-#        self.bucket_max: float = 0.0
-#        self.bucket_time: float = 0.0
-#        self.evaluation_time: float = 0.0
-#        self.packet_time: Optional[float] = None
-#
-#    def next_send_time(self, now: float) -> float:
-#        if self.packet_time is not None:
-#            self.update_bucket(now=now)
-#            if self.bucket_time <= 0:
-#                return now + self.packet_time
-#        return None
-#
-#    def update_after_send(self, now: float) -> None:
-#        if self.packet_time is not None:
-#            self.update_bucket(now=now)
-#            if self.bucket_time < self.packet_time:
-#                self.bucket_time = 0.0
-#            else:
-#                self.bucket_time -= self.packet_time
-#
-#    def update_bucket(self, now: float) -> None:
-#        if now > self.evaluation_time:
-#            self.bucket_time = min(
-#                self.bucket_time + (now - self.evaluation_time), self.bucket_max
-#            )
-#            self.evaluation_time = now
-#
-#    def update_rate(self, congestion_window: int, smoothed_rtt: float) -> None:
-#        pacing_rate = congestion_window / max(smoothed_rtt, K_MICRO_SECOND)
-#        self.packet_time = max(
-#            K_MICRO_SECOND, min(K_MAX_DATAGRAM_SIZE / pacing_rate, K_SECOND)
-#        )
-#
-#        self.bucket_max = (
-#            max(
-#                2 * K_MAX_DATAGRAM_SIZE,
-#                min(congestion_window // 4, 16 * K_MAX_DATAGRAM_SIZE),
-#            )
-#            / pacing_rate
-#        )
-#        if self.bucket_time > self.bucket_max:
-#            self.bucket_time = self.bucket_max
+class QuicPacketPacer:
+    def __init__(self) -> None:
+        self.bucket_max: float = 0.0
+        self.bucket_time: float = 0.0
+        self.evaluation_time: float = 0.0
+        self.packet_time: Optional[float] = None
+
+    def next_send_time(self, now: float) -> float:
+        if self.packet_time is not None:
+            self.update_bucket(now=now)
+            if self.bucket_time <= 0:
+                return now + self.packet_time
+        return None
+
+    def update_after_send(self, now: float) -> None:
+        if self.packet_time is not None:
+            self.update_bucket(now=now)
+            if self.bucket_time < self.packet_time:
+                self.bucket_time = 0.0
+            else:
+                self.bucket_time -= self.packet_time
+
+    def update_bucket(self, now: float) -> None:
+        if now > self.evaluation_time:
+            self.bucket_time = min(
+                self.bucket_time + (now - self.evaluation_time), self.bucket_max
+            )
+            self.evaluation_time = now
+
+    def update_rate(self, congestion_window: int, smoothed_rtt: float) -> None:
+        pacing_rate = congestion_window / max(smoothed_rtt, K_MICRO_SECOND)
+        self.packet_time = max(
+            K_MICRO_SECOND, min(K_MAX_DATAGRAM_SIZE / pacing_rate, K_SECOND)
+        )
+
+        self.bucket_max = (
+            max(
+                2 * K_MAX_DATAGRAM_SIZE,
+                min(congestion_window // 4, 16 * K_MAX_DATAGRAM_SIZE),
+            )
+            / pacing_rate
+        )
+        if self.bucket_time > self.bucket_max:
+            self.bucket_time = self.bucket_max
 
 class QuicCongestionControl:
     """
@@ -135,12 +135,12 @@ class QuicCongestionControl:
 
         # TODO : collapse congestion window if persistent congestion
 
-    #def on_rtt_measurement(self, latest_rtt: float, now: float) -> None:
-    #    # check whether we should exit slow start
-    #    if self.ssthresh is None and self._rtt_monitor.is_rtt_increasing(
-    #        latest_rtt, now
-    #    ):
-    #        self.ssthresh = self.congestion_window
+    def on_rtt_measurement(self, latest_rtt: float, now: float) -> None:
+        # check whether we should exit slow start
+        if self.ssthresh is None and self._rtt_monitor.is_rtt_increasing(
+            latest_rtt, now
+        ):
+            self.ssthresh = self.congestion_window
 
 
 class QuicPacketRecovery:
@@ -188,9 +188,14 @@ class QuicPacketRecovery:
             global K_LOSS_REDUCTION_FACTOR
             K_LOSS_REDUCTION_FACTOR = custom_cc_constants["loss_reduction_factor"]
 
+        self._dopacing = custom_cc_constants["dopacing"]
+        self._dohystart = custom_cc_constants["dohystart"]
+        self._pkt_bsd_loss = custom_cc_constants["pktbasedloss"]
+        self._time_bsd_loss = custom_cc_constants["timebasedloss"]
+
         # congestion control
         self._cc = QuicCongestionControl()
-        #self._pacer = QuicPacketPacer()
+        self._pacer = QuicPacketPacer()
 
     @property
     def bytes_in_flight(self) -> int:
@@ -316,11 +321,13 @@ class QuicPacketRecovery:
                 )
 
             # inform congestion controller
-            #self._cc.on_rtt_measurement(latest_rtt, now=now)
-            #self._pacer.update_rate(
-            #    congestion_window=self._cc.congestion_window,
-            #    smoothed_rtt=self._rtt_smoothed,
-            #)
+            if self._dohystart:
+                self._cc.on_rtt_measurement(latest_rtt, now=now)
+            if self._dopacing:
+                self._pacer.update_rate(
+                    congestion_window=self._cc.congestion_window,
+                    smoothed_rtt=self._rtt_smoothed,
+                )
 
         else:
             log_rtt = False
@@ -397,15 +404,15 @@ class QuicPacketRecovery:
             if packet_number > space.largest_acked_packet:
                 break
 
-            if packet_number <= packet_threshold:
+            if packet_number <= packet_threshold and self._pkt_bsd_loss:
                 packet.loss_trigger = "packet_threshold" 
                 lost_packets.append(packet)
-            elif packet.sent_time <= time_threshold:
+            elif packet.sent_time <= time_threshold and self._time_bsd_loss:
                 packet.loss_trigger = "time_threshold" 
                 lost_packets.append(packet)
             else:
                 packet_loss_time = packet.sent_time + loss_delay
-                if space.loss_time is None or space.loss_time > packet_loss_time:
+                if (space.loss_time is None or space.loss_time > packet_loss_time) and self._time_bsd_loss:
                     space.loss_time = packet_loss_time
 
         self._on_packets_lost(lost_packets, space=space, now=now)
@@ -472,10 +479,11 @@ class QuicPacketRecovery:
         # inform congestion controller
         if lost_packets_cc:
             self._cc.on_packets_lost(lost_packets_cc, now=now)
-            #self._pacer.update_rate(
-            #    congestion_window=self._cc.congestion_window,
-            #    smoothed_rtt=self._rtt_smoothed,
-            #)
+            if self._dopacing:
+                self._pacer.update_rate(
+                    congestion_window=self._cc.congestion_window,
+                    smoothed_rtt=self._rtt_smoothed,
+                )
             if self._quic_logger is not None:
                 self._log_metrics_updated()
 

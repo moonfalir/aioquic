@@ -426,6 +426,23 @@ if __name__ == "__main__":
         type=float,
         help="QUIC Congestion loss reduction factor",
     )
+    parser.add_argument('--pacing', 
+        default=False, 
+        action='store_true'
+    )
+    parser.add_argument('--hystart', 
+        default=False, 
+        action='store_true'
+    )
+    parser.add_argument('--nopktthresh', 
+        default=True, 
+        action='store_false'
+    )
+    parser.add_argument('--notimethresh', 
+        default=True, 
+        action='store_false'
+    )
+
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -460,6 +477,10 @@ if __name__ == "__main__":
         custom_cc_constants["initial_window"] = args.ini_cwnd
     if args.loss_reduce:
         custom_cc_constants["loss_reduction_factor"] = args.loss_reduce
+    custom_cc_constants["dopacing"] = args.pacing
+    custom_cc_constants["dohystart"] = args.hystart
+    custom_cc_constants["pktbasedloss"] = args.nopktthresh
+    custom_cc_constants["timebasedloss"] = args.notimethresh
 
     configuration = QuicConfiguration(
         alpn_protocols=H3_ALPN + H0_ALPN + ["siduck"],
