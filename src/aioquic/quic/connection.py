@@ -1083,6 +1083,9 @@ class QuicConnection:
         if self._quic_logger is not None:
             self._configuration.quic_logger.end_trace(self._quic_logger, isclient)
             self._quic_logger = None
+        
+        if isclient:
+            exit()
 
     def _connect(self, now: float) -> None:
         """
