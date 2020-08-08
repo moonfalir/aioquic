@@ -187,11 +187,14 @@ class QuicPacketRecovery:
         if "loss_reduction_factor" in custom_cc_constants:
             global K_LOSS_REDUCTION_FACTOR
             K_LOSS_REDUCTION_FACTOR = custom_cc_constants["loss_reduction_factor"]
-
-        self._dopacing = custom_cc_constants["dopacing"]
-        self._dohystart = custom_cc_constants["dohystart"]
-        self._pkt_bsd_loss = custom_cc_constants["pktbasedloss"]
-        self._time_bsd_loss = custom_cc_constants["timebasedloss"]
+        if "dopacing" in custom_cc_constants:
+            self._dopacing = custom_cc_constants["dopacing"]
+        if "dohystart" in custom_cc_constants:
+            self._dohystart = custom_cc_constants["dohystart"]
+        if "pktbasedloss" in custom_cc_constants:
+            self._pkt_bsd_loss = custom_cc_constants["pktbasedloss"]
+        if "timebasedloss" in custom_cc_constants:
+            self._time_bsd_loss = custom_cc_constants["timebasedloss"]
 
         # congestion control
         self._cc = QuicCongestionControl()
