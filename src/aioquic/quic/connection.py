@@ -284,7 +284,7 @@ class QuicConnection:
         )
         self._loss_at: Optional[float] = None
         self._network_paths: List[QuicNetworkPath] = []
-        self._pacing_at: Optional[float] = None
+        #self._pacing_at: Optional[float] = None
         self._packet_number = 0
         self._parameters_received = False
         self._peer_cid = QuicConnectionId(
@@ -343,11 +343,6 @@ class QuicConnection:
             send_probe=self._send_probe,
             custom_cc_constants=self._custom_cc_constants
         )
-
-        if "dopacing" in custom_cc_constants:
-            self._dopacing = custom_cc_constants["dopacing"]
-        else:
-            self._dopacing = False
 
         # things to send
         self._close_pending = False
@@ -614,8 +609,8 @@ class QuicConnection:
                 timer_at = self._loss_at
 
             # pacing timer
-            if self._pacing_at is not None and self._pacing_at < timer_at and self._dopacing:
-                timer_at = self._pacing_at
+            #if self._pacing_at is not None and self._pacing_at < timer_at:
+            #    timer_at = self._pacing_at
 
         return timer_at
 
@@ -2414,10 +2409,10 @@ class QuicConnection:
 
         while True:
             # apply pacing, except if we have ACKs to send
-            if space.ack_at is None or space.ack_at >= now and self._dopacing:
-                self._pacing_at = self._loss._pacer.next_send_time(now=now)
-                if self._pacing_at is not None:
-                    break
+            #if space.ack_at is None or space.ack_at >= now:
+            #    self._pacing_at = self._loss._pacer.next_send_time(now=now)
+            #    if self._pacing_at is not None:
+            #        break
             builder.start_packet(packet_type, crypto)
 
             if self._handshake_complete:
@@ -2536,8 +2531,8 @@ class QuicConnection:
 
             if builder.packet_is_empty:
                 break
-            else:
-                self._loss._pacer.update_after_send(now=now)
+            #else:
+            #    self._loss._pacer.update_after_send(now=now)
 
     def _write_handshake(
         self, builder: QuicPacketBuilder, epoch: tls.Epoch, now: float
