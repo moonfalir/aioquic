@@ -493,17 +493,17 @@ class QuicConnection:
                 (tls.Epoch.INITIAL, PACKET_TYPE_INITIAL),
             ):
                 crypto = self._cryptos[epoch]
-                #if crypto.send.is_valid():
-                #    builder.start_packet(packet_type, crypto)
-                    #self._write_connection_close_frame(
-                    #    builder=builder,
-                    #    epoch=epoch,
-                    #    error_code=self._close_event.error_code,
-                    #    frame_type=self._close_event.frame_type,
-                    #    reason_phrase=self._close_event.reason_phrase,
-                    #)
-                    #self._close_pending = False
-                    #break
+                if crypto.send.is_valid():
+                    builder.start_packet(packet_type, crypto)
+                    self._write_connection_close_frame(
+                        builder=builder,
+                        epoch=epoch,
+                        error_code=self._close_event.error_code,
+                        frame_type=self._close_event.frame_type,
+                        reason_phrase=self._close_event.reason_phrase,
+                    )
+                    self._close_pending = False
+                    break
             self._close_begin(is_initiator=True, now=now)
             self._close_end(isclient=True)
         else:
